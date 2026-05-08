@@ -22,7 +22,7 @@ func main() {
 func start(mode *string) {
 	switch *mode {
 	case "default":
-		loger.Loger.Info("\nHi,This is XhhRobot\nYour Should Set a Mode\n--mode start | login | test")
+		loger.Loger.Info("\nHi,This is XhhRobot\nYou need start with a mode\n-mode start | login | test")
 	case "test":
 		fmt.Println("TEST")
 	case "login":
