@@ -168,3 +168,15 @@ token：您的token
 <img width="313" height="72" alt="image" src="https://github.com/user-attachments/assets/d7580a2c-9c02-47b2-8f0a-616b4f072231" />
 
 若您为第一次运行，不希望自动回复之前有人艾特过你的内容，请输入n并回车，反之，输入y  
+
+# 支持我
+
+https://3mua.cn/sponsor
+
+当然，如果你愿意，在你自己的机器人账号置顶一个帖子宣传此仓库也算是对我比较大的支持了！
+
+# PR&Issues
+
+欢迎各位提出Pr以及Issues。
+
+在提pr前还是建议先去Issues请求一下，避免与其他人冲突。
