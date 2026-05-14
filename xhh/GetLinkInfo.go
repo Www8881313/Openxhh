@@ -1,14 +1,10 @@
 package xhh
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"io"
-	"net/http"
 	"strconv"
-	"strings"
 	"xhhrobot/ai"
-	"xhhrobot/config"
 	"xhhrobot/db"
 	"xhhrobot/loger"
 
@@ -77,7 +73,7 @@ func GetLinkInfo(LinkID int, CommentID int) (Contents []ai.Content, Topics []ai.
 		}
 		if v.Type != "text" {
 			content.Type = "image_url"
-			content.ImgUrl.Url = GetImgUrl(v.Url)
+			content.ImgUrl.Url = v.Url
 			Contents = append(Contents, content)
 			continue
 		}
@@ -86,32 +82,4 @@ func GetLinkInfo(LinkID int, CommentID int) (Contents []ai.Content, Topics []ai.
 		Contents = append(Contents, content)
 	}
 	return Contents, RespS.Result.Link.Topics, RespS.Result.Link.Tags
-}
-
-func GetImgUrl(Url string) string {
-	Model := config.ConfigStruct.Ai.Model
-	if Model == "" {
-		loger.Loger.Fatal("你真的设置模型了吗")
-	}
-	modarr := strings.Split(Model, "-")
-	if len(modarr) <= 1 {
-		return Url
-	}
-	if modarr[0] != "kimi" {
-		return Url
-	}
-	resp, err := http.Get(Url)
-	if err != nil {
-		loger.Loger.Error("[XHH]无法获取图片信息", zap.Error(err), zap.String("url", Url))
-		return Url
-	}
-	content := strings.Split(resp.Header.Get("content-type"), "/")
-	if content[0] != "image" {
-		loger.Loger.Error("[XHH]响应体并非图片", zap.Error(err), zap.String("url", Url))
-		return Url
-	}
-	Data, err := io.ReadAll(resp.Body)
-	base64 := "data:" + resp.Header.Get("content-type") + ",base64," + base64.StdEncoding.EncodeToString(Data)
-
-	return base64
 }
