@@ -25,6 +25,9 @@ var Info struct {
 var CheckTime int
 var ReplyTime int
 
+const messagePageLimit = 20
+const maxMessagePages = 5
+
 func ShouldMentionTarget(text string) bool {
 	triggers := []string{"他", "她", "对方", "那个人", "这个人", "楼上", "上面", "反驳", "告诉", "问问", "回复他", "回复她", "怼"}
 	for _, trigger := range triggers {
@@ -92,39 +95,47 @@ func IsErr() {
 
 func CheckAt() {
 	fmt.Println("[XHH]检查@", time.Now().Format("2006-01-02 15:04:05"))
-	var offset int
-	nomore := "false"
-	other := fmt.Sprintf("?message_type=16&offset=%v&limit=20&no_more=%s", offset, nomore)
-	resp := SendReq("GET", "/bbs/app/user/message", nil, other)
-	if resp == nil {
-		loger.Loger.Error("[XHH]链接发送失败了")
-		IsErr()
-		return
-	}
-	var data Respo
-	Dbyte, err := io.ReadAll(resp.Body)
-	if err != nil {
-		loger.Loger.Error("[XHH]无法读取Body", zap.Error(err))
-		IsErr()
-		return
-	}
-	err = json.Unmarshal(Dbyte, &data)
 
-	if err != nil {
-		loger.Loger.Error("[XHH]无法反序列化", zap.Error(err), zap.String("raw", string(Dbyte)))
-		IsErr()
-		return
-	}
+	for page := 0; page < maxMessagePages; page++ {
+		offset := page * messagePageLimit
+		other := fmt.Sprintf("?message_type=16&offset=%v&limit=%v&no_more=false", offset, messagePageLimit)
+		resp := SendReq("GET", "/bbs/app/user/message", nil, other)
+		if resp == nil {
+			loger.Loger.Error("[XHH]链接发送失败了")
+			IsErr()
+			return
+		}
 
-	for _, v := range data.Result.Messages {
-		if Check(v.UserID) {
-			if DontReply {
-				db.Insert(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.CommentText, true)
-			} else {
-				db.Insert(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.CommentText, false)
+		var data Respo
+		Dbyte, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			loger.Loger.Error("[XHH]无法读取Body", zap.Error(err))
+			IsErr()
+			return
+		}
+		err = json.Unmarshal(Dbyte, &data)
+		if err != nil {
+			loger.Loger.Error("[XHH]无法反序列化", zap.Error(err), zap.String("raw", string(Dbyte)))
+			IsErr()
+			return
+		}
+
+		for _, v := range data.Result.Messages {
+			if Check(v.UserID) {
+				if DontReply {
+					db.Insert(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.CommentText, true)
+				} else {
+					db.Insert(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.CommentText, false)
+				}
 			}
 		}
+
+		if len(data.Result.Messages) < messagePageLimit {
+			break
+		}
 	}
+
 	DontReply = false
 	time.Sleep(time.Duration(CheckTime) * time.Second)
 	CheckAt()
@@ -149,8 +160,8 @@ func AutoReply() {
 					if Check(v.Uid) {
 						Info, top, tags, mention := GetLinkInfo(v.LinkID, v.RootID, v.CommentID, v.Uid)
 						if len(Info) <= 1 {
-							loger.Loger.Info("[XHH]获取LinkID失败")
-							IsErr()
+							loger.Loger.Info("[XHH]无法整理@消息，已标记完成避免阻塞", zap.Int("comment_id", v.CommentID), zap.Int("link_id", v.LinkID))
+							db.Replyed(v.CommentID)
 							return
 						}
 						mentionTrigger := ShouldMentionTarget(v.Text)

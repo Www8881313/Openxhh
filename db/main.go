@@ -41,6 +41,7 @@ func Insert(msg_id, comment_a_id, comment_root_id, link_id, user_a_id int, comme
 			loger.Loger.Info("[DB]SQLiteERROR", zap.Error(err))
 			return false
 		}
+		return true
 	}
 	return false
 }
