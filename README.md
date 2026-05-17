@@ -8,6 +8,9 @@
 
 - 自动检查配置白名单用户的 @ 消息，并调用 OpenAI 兼容接口回复。
 - 支持自定义 AI 接口、模型和 prompt。
+- 支持评论区 @ 生图：`生图`、`画图`、`生成图片`。
+- 支持将生成图片写入 VPS 外部静态图床，并用 `imgs=<图片URL>` 发布顶级带图评论。
+- 保留小黑盒 COS 上传实验路径；当前推荐先使用 `image.uploadMode=external`。
 - 支持 SQLite / PostgreSQL，个人部署建议使用 SQLite。
 - 增强 AI 输入上下文：
   - 帖子标题和正文；
@@ -44,6 +47,8 @@ curl -fsSL https://raw.githubusercontent.com/Www8881313/xhhRobot/main/scripts/up
 6. 替换为增强版二进制；
 7. 保留原来的 `config.json`、`cookie.json`、`sql.db` 和日志；
 8. 重新启动服务。
+
+如果你是从旧版升级，脚本不会改动原有 prompt、模型、数据库或 Cookie。需要生图功能时，只需在原 `config.json` 里额外补充 `image` 配置块。
 
 如果你的安装目录不是 `/opt/xhhRobot`，可以这样指定：
 
@@ -131,6 +136,17 @@ nano /opt/xhhRobot/config.json
     "prompt": "你的回复策略",
     "baseUrl": "你的 OpenAI 兼容 /v1/chat/completions 地址",
     "token": "你的 AI API Token"
+  },
+  "image": {
+    "model": "gpt-image-2",
+    "baseUrl": "你的 OpenAI 兼容 /v1/images/generations 地址",
+    "token": "你的图片 API Token",
+    "size": "1024x1024",
+    "responseFormat": "b64_json",
+    "outputDir": "images",
+    "uploadMode": "external",
+    "externalDir": "/var/www/xhh-images",
+    "externalBaseUrl": "http://你的VPS公网IP/xhh-images"
   }
 }
 ```
@@ -139,9 +155,38 @@ nano /opt/xhhRobot/config.json
 
 - `xhh.owner` 填小黑盒数字 UID，不是昵称。
 - `ai.baseUrl` 要填完整的 Chat Completions 地址，例如 `/v1/chat/completions`。
+- `image.baseUrl` 要填完整的 Images Generations 地址，例如 `/v1/images/generations`。
+- `image.uploadMode=external` 是当前推荐方案，会把图片写入 `image.externalDir`，评论里使用 `image.externalBaseUrl`。
 - 不要公开 `config.json`、`cookie.json`、`sql.db`。
 
-### 4. 登录小黑盒
+### 4. 准备外部图片目录，可选但推荐
+
+如果需要评论区生图，先让 VPS 暴露一个静态图片目录。已安装 Nginx 时，可在默认站点里加入：
+
+```nginx
+location /xhh-images/ {
+    alias /var/www/xhh-images/;
+    add_header Access-Control-Allow-Origin *;
+}
+```
+
+准备目录，并放入一张测试图：
+
+```bash
+mkdir -p /var/www/xhh-images
+cp /你的测试图片.png /var/www/xhh-images/test.png
+chmod 755 /var/www/xhh-images
+chmod 644 /var/www/xhh-images/test.png
+nginx -t && systemctl reload nginx
+```
+
+确认公网可访问：
+
+```bash
+curl -I http://你的VPS公网IP/xhh-images/test.png
+```
+
+### 5. 登录小黑盒
 
 ```bash
 cd /opt/xhhRobot
@@ -154,7 +199,7 @@ cd /opt/xhhRobot
 /opt/xhhRobot/cookie.json
 ```
 
-### 5. 前台试跑
+### 6. 前台试跑
 
 ```bash
 cd /opt/xhhRobot
@@ -163,7 +208,7 @@ cd /opt/xhhRobot
 
 如果确认正常，再配置 systemd。
 
-### 6. systemd 后台运行
+### 7. systemd 后台运行
 
 ```bash
 cat >/etc/systemd/system/xhhRobot.service <<'EOF'
@@ -202,6 +247,49 @@ systemctl stop xhhRobot
 systemctl restart xhhRobot
 systemctl status xhhRobot --no-pager
 journalctl -u xhhRobot -f
+```
+
+## 生图验证命令
+
+先验证命令识别和 Form Data，不调用真实生图接口：
+
+```bash
+go run ./cmd/dry_run_image_comment \
+  -comment_id 123 \
+  -link_id 181099114 \
+  -root_id 123 \
+  -userid 你的ownerUID \
+  -text "@机器人 生图 一只赛博朋克猫"
+```
+
+调用真实生图接口但不上传、不发评论：
+
+```bash
+go run ./cmd/dry_run_image_comment \
+  -comment_id 123 \
+  -link_id 181099114 \
+  -root_id 123 \
+  -userid 你的ownerUID \
+  -text "@机器人 生图 一只赛博朋克猫" \
+  -mock_image=false
+```
+
+验证已有图片 URL 能否发带图评论：
+
+```bash
+go run ./cmd/test_image_comment 181099114 "图片测试" "http://你的VPS公网IP/xhh-images/test.png"
+```
+
+验证本地图片上传到外部图床并可选发布评论：
+
+```bash
+go run ./cmd/test_xhh_image_upload_comment \
+  -file ./images/example.png \
+  -link_id 181099114 \
+  -reply_id -1 \
+  -root_id -1 \
+  -text "图片测试" \
+  -publish=true
 ```
 
 ## 安全建议
