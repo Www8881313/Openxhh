@@ -42,15 +42,17 @@ type authStore struct {
 
 type appConfig struct {
 	Xhh struct {
-		CheckTime       int    `json:"checkTime"`
-		ReplyTime       int    `json:"replyTime"`
-		MaxReplyThreads int    `json:"maxReplyThreads"`
-		EnableWhitelist bool   `json:"enableWhitelist"`
-		Owner           string `json:"owner"`
-		DeviceID        string `json:"deviceID"`
-		BaseURL         string `json:"baseUrl"`
-		WebVer          string `json:"webver"`
-		Ver             string `json:"version"`
+		CheckTime                int    `json:"checkTime"`
+		ReplyTime                int    `json:"replyTime"`
+		MaxReplyThreads          int    `json:"maxReplyThreads"`
+		MaxPendingReplies        int    `json:"maxPendingReplies"`
+		MaxPendingRepliesPerUser int    `json:"maxPendingRepliesPerUser"`
+		EnableWhitelist          bool   `json:"enableWhitelist"`
+		Owner                    string `json:"owner"`
+		DeviceID                 string `json:"deviceID"`
+		BaseURL                  string `json:"baseUrl"`
+		WebVer                   string `json:"webver"`
+		Ver                      string `json:"version"`
 	} `json:"xhh"`
 	DataBase struct {
 		Type   string `json:"type"`
@@ -506,6 +508,14 @@ func applyConfigDefaults(cfg *appConfig) bool {
 	}
 	if cfg.Xhh.MaxReplyThreads <= 0 {
 		cfg.Xhh.MaxReplyThreads = 3
+		changed = true
+	}
+	if cfg.Xhh.MaxPendingReplies <= 0 {
+		cfg.Xhh.MaxPendingReplies = 50
+		changed = true
+	}
+	if cfg.Xhh.MaxPendingRepliesPerUser <= 0 {
+		cfg.Xhh.MaxPendingRepliesPerUser = 5
 		changed = true
 	}
 	if cfg.Xhh.BaseURL == "" {
@@ -1051,6 +1061,7 @@ const indexHTML = `<!doctype html>
     .field { display: grid; gap: 7px; }
     .field.wide { grid-column: 1 / -1; }
     .field label { color: var(--muted); font-size: 12px; }
+    .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .form-group { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; padding-top: 12px; border-top: 1px solid var(--line); }
     .form-group h3 { grid-column: 1 / -1; margin: 0; font-size: 15px; color: var(--cyan); }
     .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 16px; padding: 13px; background: rgba(2,5,9,.3); }
@@ -1133,7 +1144,7 @@ const indexHTML = `<!doctype html>
               <h2>配置向导</h2>
               <p>保存后会写入工作目录下的 <span id="configPath">config.json</span>，再扫码登录并启动机器人。</p>
             </div>
-            <button id="saveConfigBtn" type="submit" form="configForm">保存配置</button>
+            <div class="button-row"><button id="saveConfigBtn" type="submit" form="configForm">保存配置</button><button id="configRestartBtn" class="secondary" type="button">重启服务</button></div>
           </div>
           <form id="configForm" class="form-grid">
             <div class="form-group">
@@ -1141,6 +1152,8 @@ const indexHTML = `<!doctype html>
               <div class="field"><label>检查间隔/秒</label><input class="input" data-path="xhh.checkTime" data-type="number"></div>
               <div class="field"><label>回复间隔/秒</label><input class="input" data-path="xhh.replyTime" data-type="number"></div>
               <div class="field"><label>最高回复线程</label><input class="input" data-path="xhh.maxReplyThreads" data-type="number"></div>
+              <div class="field"><label>最大待回复队列</label><input class="input" data-path="xhh.maxPendingReplies" data-type="number"></div>
+              <div class="field"><label>单用户待回复上限</label><input class="input" data-path="xhh.maxPendingRepliesPerUser" data-type="number"></div>
               <label class="switch field wide"><span>启用白名单（关闭时回复所有 @，仍识别 owner）</span><input data-path="xhh.enableWhitelist" data-type="bool" type="checkbox"></label>
               <div class="field wide"><label>Owner / 白名单 UID（英文逗号分隔）</label><input class="input" data-path="xhh.owner"></div>
               <div class="field"><label>Device ID</label><input class="input" data-path="xhh.deviceID"></div>
@@ -1161,14 +1174,14 @@ const indexHTML = `<!doctype html>
               <h3>AI 回复</h3>
               <div class="field"><label>模型</label><input class="input" data-path="ai.model"></div>
               <div class="field"><label>Token</label><input class="input" data-path="ai.token" type="password"></div>
-              <div class="field wide"><label>Chat Completions URL</label><input class="input" data-path="ai.baseUrl"></div>
+              <div class="field wide"><label>Chat Completions URL</label><input class="input" data-path="ai.baseUrl"><small class="hint">例如：https://xxx.com/v1/chat/completions</small></div>
               <div class="field wide"><label>回复策略 Prompt</label><textarea data-path="ai.prompt"></textarea></div>
             </div>
             <div class="form-group">
               <h3>图片能力</h3>
               <div class="field"><label>模型</label><input class="input" data-path="image.model"></div>
               <div class="field"><label>Token</label><input class="input" data-path="image.token" type="password"></div>
-              <div class="field wide"><label>Images Generations URL</label><input class="input" data-path="image.baseUrl"></div>
+              <div class="field wide"><label>Images Generations URL</label><input class="input" data-path="image.baseUrl"><small class="hint">例如：https://xxx.com/v1/images/generations</small></div>
               <div class="field"><label>尺寸</label><input class="input" data-path="image.size"></div>
               <div class="field"><label>Response Format</label><input class="input" data-path="image.responseFormat"></div>
               <div class="field"><label>输出目录</label><input class="input" data-path="image.outputDir"></div>
@@ -1178,7 +1191,7 @@ const indexHTML = `<!doctype html>
               <label class="switch field wide"><span>启用图片 Prompt 优化</span><input data-path="image.promptRefine" data-type="bool" type="checkbox"></label>
               <div class="field"><label>Prompt 优化模型</label><input class="input" data-path="image.promptModel"></div>
               <div class="field"><label>Prompt 最大字符数</label><input class="input" data-path="image.promptMaxChars" data-type="number"></div>
-              <div class="field wide"><label>Prompt 优化 URL</label><input class="input" data-path="image.promptBaseUrl"></div>
+              <div class="field wide"><label>Prompt 优化 URL</label><input class="input" data-path="image.promptBaseUrl"><small class="hint">例如：https://xxx.com/v1/chat/completions</small></div>
               <div class="field wide"><label>Prompt 优化 Token</label><input class="input" data-path="image.promptToken" type="password"></div>
             </div>
           </form>
@@ -1245,6 +1258,7 @@ const indexHTML = `<!doctype html>
 
     document.querySelector('#startBtn').addEventListener('click', () => action('/api/start', '启动命令已发送'));
     document.querySelector('#stopBtn').addEventListener('click', () => action('/api/stop', '停止命令已发送'));
+    document.querySelector('#configRestartBtn')?.addEventListener('click', restartRobot);
     document.querySelector('#robotLoginBtn').addEventListener('click', startRobotLogin);
     document.querySelector('#refreshBtn').addEventListener('click', loadLogs);
     document.querySelector('#logoutBtn').addEventListener('click', async () => {
@@ -1283,6 +1297,19 @@ const indexHTML = `<!doctype html>
       try {
         await api(path, { method: 'POST' });
         appToast.textContent = okText;
+        await refreshStatus();
+        await loadLogs();
+      } catch (error) {
+        appToast.textContent = error.message;
+      }
+    }
+
+    async function restartRobot() {
+      appToast.textContent = '';
+      try {
+        try { await api('/api/stop', { method: 'POST' }); } catch (_) {}
+        await api('/api/start', { method: 'POST' });
+        appToast.textContent = '重启命令已发送';
         await refreshStatus();
         await loadLogs();
       } catch (error) {

@@ -25,8 +25,12 @@ var Info struct {
 var CheckTime int
 var ReplyTime int
 var MaxReplyThreads int
+var MaxPendingReplies int
+var MaxPendingRepliesPerUser int
 
 const defaultMaxReplyThreads = 3
+const defaultMaxPendingReplies = 50
+const defaultMaxPendingRepliesPerUser = 5
 const messagePageLimit = 20
 const maxMessagePages = 5
 
@@ -52,6 +56,8 @@ func Init() {
 	CheckTime = config.ConfigStruct.Xhh.CheckTime
 	ReplyTime = config.ConfigStruct.Xhh.ReplyTime
 	MaxReplyThreads = config.ConfigStruct.Xhh.MaxReplyThreads
+	MaxPendingReplies = config.ConfigStruct.Xhh.MaxPendingReplies
+	MaxPendingRepliesPerUser = config.ConfigStruct.Xhh.MaxPendingRepliesPerUser
 	if CheckTime == 0 {
 		loger.Loger.Warn("[XHH]您的设置中未设置检查时间，已默认为30s")
 		CheckTime = 30
@@ -63,6 +69,14 @@ func Init() {
 	if MaxReplyThreads <= 0 {
 		loger.Loger.Warn("[XHH]您的设置中未设置最高回复线程，已默认为3")
 		MaxReplyThreads = defaultMaxReplyThreads
+	}
+	if MaxPendingReplies <= 0 {
+		loger.Loger.Warn("[XHH]您的设置中未设置最大待回复队列，已默认为50")
+		MaxPendingReplies = defaultMaxPendingReplies
+	}
+	if MaxPendingRepliesPerUser <= 0 {
+		loger.Loger.Warn("[XHH]您的设置中未设置单用户最大待回复队列，已默认为5")
+		MaxPendingRepliesPerUser = defaultMaxPendingRepliesPerUser
 	}
 	json.Unmarshal(file, &Info)
 }
@@ -200,12 +214,8 @@ func CheckAt() {
 			}
 
 			for _, v := range data.Result.Messages {
-				if Check(v.UserID) {
-					if DontReply {
-						db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, true)
-					} else {
-						db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, false)
-					}
+				if shouldQueueMessage(v) {
+					db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, DontReply)
 				}
 			}
 
@@ -218,6 +228,27 @@ func CheckAt() {
 	DontReply = false
 	time.Sleep(time.Duration(CheckTime) * time.Second)
 	CheckAt()
+}
+
+func shouldQueueMessage(v Msg) bool {
+	if !Check(v.UserID) {
+		db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, true)
+		return false
+	}
+	if DontReply || IsOwner(v.UserID) {
+		return true
+	}
+	if MaxPendingReplies > 0 && db.PendingReplyCount() >= MaxPendingReplies {
+		loger.Loger.Warn("[XHH]待回复队列已满，跳过普通用户@", zap.Int("max", MaxPendingReplies), zap.Int("userid", v.UserID), zap.Int("msg_id", v.MsgID))
+		db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, true)
+		return false
+	}
+	if MaxPendingRepliesPerUser > 0 && db.PendingReplyCountByUser(v.UserID) >= MaxPendingRepliesPerUser {
+		loger.Loger.Warn("[XHH]单用户待回复队列已满，跳过普通用户@", zap.Int("max", MaxPendingRepliesPerUser), zap.Int("userid", v.UserID), zap.Int("msg_id", v.MsgID))
+		db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, true)
+		return false
+	}
+	return true
 }
 
 func AutoReply() {

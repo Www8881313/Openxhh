@@ -121,6 +121,39 @@ type CommStruct struct {
 	UserName  string
 }
 
+func PendingReplyCount() int {
+	return PendingReplyCountByUser(0)
+}
+
+func PendingReplyCountByUser(userID int) int {
+	ctx := context.Background()
+	var count int
+	if cfg.Type == "pg" {
+		var err error
+		if userID > 0 {
+			err = pg.Conn.QueryRow(ctx, "SELECT COUNT(*) FROM at WHERE reply=false AND user_a_id=$1", userID).Scan(&count)
+		} else {
+			err = pg.Conn.QueryRow(ctx, "SELECT COUNT(*) FROM at WHERE reply=false").Scan(&count)
+		}
+		if err != nil {
+			loger.Loger.Error("[DB]无法获取待回复数量", zap.Error(err))
+		}
+		return count
+	}
+	if cfg.Type == "sqlite" {
+		var err error
+		if userID > 0 {
+			err = sqlite.Db.QueryRow("SELECT COUNT(*) FROM at WHERE reply=false AND user_a_id=?", userID).Scan(&count)
+		} else {
+			err = sqlite.Db.QueryRow("SELECT COUNT(*) FROM at WHERE reply=false").Scan(&count)
+		}
+		if err != nil {
+			loger.Loger.Error("[DB]无法获取待回复数量", zap.Error(err))
+		}
+	}
+	return count
+}
+
 func GetComm(limit int) (CommArr []CommStruct) {
 	if limit <= 0 {
 		limit = 1

@@ -82,6 +82,8 @@ sudo nano /opt/Openxhh/config.json
     "checkTime": 60,
     "replyTime": 30,
     "maxReplyThreads": 3,
+    "maxPendingReplies": 50,
+    "maxPendingRepliesPerUser": 5,
     "enableWhitelist": false,
     "owner": "你的 owner 数字UID；开启白名单时也作为允许 UID，多个用英文逗号分隔",
     "deviceID": "",
@@ -128,6 +130,8 @@ sudo nano /opt/Openxhh/config.json
 - `xhh.owner` 填小黑盒数字 UID，不是昵称；多个 UID 用英文逗号分隔。即使白名单关闭，机器人也会用它识别 owner 身份。
 - 开启白名单后，`xhh.owner` 会自动作为允许回复的 UID 列表，不需要额外重复添加。
 - `xhh.maxReplyThreads` 控制同一轮最多并发回复数，个人部署建议保持 `3` 或更低。
+- `xhh.maxPendingReplies` 控制全局待回复队列上限，普通用户超过上限会被跳过并标记已处理，owner 不受限制。
+- `xhh.maxPendingRepliesPerUser` 控制单个普通用户待回复上限，避免单人刷 @ 堵住队列，owner 不受限制。
 - `ai.baseUrl` 要填完整的 Chat Completions 地址，例如 `/v1/chat/completions`。
 - `image.baseUrl` 要填完整的 Images Generations 地址，例如 `/v1/images/generations`。
 - `image.uploadMode=external` 是当前推荐方案，会把图片写入 `image.externalDir`，评论里使用 `image.externalBaseUrl`。
