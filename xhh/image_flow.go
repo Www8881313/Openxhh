@@ -38,10 +38,11 @@ func HandleImageGenerationComment(linkID, commentID, rootID, userID int, text st
 }
 
 func ProcessImageGenerationComment(linkID, commentID, rootID, userID int, text string, options ImageCommentOptions) ImageCommentResult {
-	prompt, ok := ExtractImagePrompt(text)
+	command, ok := ParseImageCommand(text)
 	if !ok {
 		return ImageCommentResult{}
 	}
+	prompt := command.Prompt
 	if !Check(userID) {
 		if options.DryRun {
 			fmt.Printf("dry-run: unauthorized user ignored, comment_id=%d userid=%d\n", commentID, userID)
@@ -70,7 +71,14 @@ func ProcessImageGenerationComment(linkID, commentID, rootID, userID int, text s
 	rootIDText := "-1"
 	replyText := "已生成：" + prompt
 	if !options.DryRun {
-		if mention := GetCommentAuthorMention(linkID, rootID, commentID, userID); mention != "" {
+		mention := ""
+		if command.MentionTargetText != "" {
+			mention = GetExplicitMentionFromPost(linkID, "艾特"+command.MentionTargetText, userID)
+		}
+		if mention == "" {
+			mention = GetCommentAuthorMention(linkID, rootID, commentID, userID)
+		}
+		if mention != "" {
 			replyText = mention + replyText
 		}
 	}
