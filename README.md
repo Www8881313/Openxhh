@@ -513,12 +513,14 @@ Openxhh 支持在评论区直接 @ 机器人生图，例如：
 <details>
 <summary>生图验证命令</summary>
 
+下面命令里的 `你的测试帖子link_id` 必须换成你自己的小黑盒测试帖子 ID。不要直接复制别人的 `link_id`：评论会发到别人的帖子下面，或者因为帖子权限、可见性、状态不同导致测试失败。
+
 验证命令识别和 Form Data，不调用真实生图接口：
 
 ```bash
 go run ./cmd/dry_run_image_comment \
   -comment_id 123 \
-  -link_id 181099114 \
+  -link_id 你的测试帖子link_id \
   -root_id 123 \
   -userid 你的ownerUID \
   -text "@机器人 生图 一只赛博朋克猫"
@@ -529,7 +531,7 @@ go run ./cmd/dry_run_image_comment \
 ```bash
 go run ./cmd/dry_run_image_comment \
   -comment_id 123 \
-  -link_id 181099114 \
+  -link_id 你的测试帖子link_id \
   -root_id 123 \
   -userid 你的ownerUID \
   -text "@机器人 生图 一只赛博朋克猫" \
@@ -539,7 +541,7 @@ go run ./cmd/dry_run_image_comment \
 验证已有图片 URL 能否发带图评论：
 
 ```bash
-go run ./cmd/test_image_comment 181099114 "图片测试" "http://你的VPS公网IP/xhh-images/test.png"
+go run ./cmd/test_image_comment 你的测试帖子link_id "图片测试" "http://你的VPS公网IP/xhh-images/test.png"
 ```
 
 验证本地图片上传到外部图床并可选发布评论：
@@ -547,12 +549,22 @@ go run ./cmd/test_image_comment 181099114 "图片测试" "http://你的VPS公网
 ```bash
 go run ./cmd/test_xhh_image_upload_comment \
   -file ./images/example.png \
-  -link_id 181099114 \
+  -link_id 你的测试帖子link_id \
   -reply_id -1 \
   -root_id -1 \
   -text "图片测试" \
   -publish=true
 ```
+
+测试带图评论前确认：
+
+- `link_id` 已换成你自己的小黑盒测试帖子 ID。
+- 图片 URL 是公网 URL，不是 `localhost`、`127.0.0.1`、内网 IP 或只在自己电脑可访问的地址。
+- 用手机 4G/5G 或无登录浏览器能直接打开图片 URL。
+- `curl -I 图片URL` 返回 `200 OK`。
+- `image.externalDir` 和 Nginx `alias` 指向同一个目录。
+- `image.externalBaseUrl` 和浏览器访问的图片 URL 前缀一致。
+- 如果别人看不到测试图片，优先检查公网图床，而不是先怀疑 `link_id`。
 
 </details>
 
