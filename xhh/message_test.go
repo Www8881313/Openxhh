@@ -75,6 +75,8 @@ func TestExtractExplicitMentionTargetConversationCommands(t *testing.T) {
 		{text: "@机器人 咬小明一口", want: "小明"},
 		{text: "@机器人 反驳小明的观点", want: "小明"},
 		{text: "@机器人 问问小周怎么看", want: "小周"},
+		{text: "@机器人 生成一张小菲的画像，并艾特小菲来看[cube_喜欢]", want: "小菲"},
+		{text: "@机器人 生图 一只猫，顺便艾特小明看看[cube_点赞]", want: "小明"},
 		{text: "@机器人 反驳他", want: ""},
 	}
 

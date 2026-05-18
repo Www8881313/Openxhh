@@ -82,6 +82,8 @@ var explicitMentionTargetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?:咬|反驳|怼|喷|骂|夸|安慰|问问|告诉|回复)\s*` + explicitMentionTargetPattern),
 }
 
+var xhhEmojiPattern = regexp.MustCompile(`\[[^\[\]\s]{1,32}\]`)
+
 func buildMention(uid int, username string) string {
 	id := strconv.Itoa(uid)
 	return `<a data-user-id="` + html.EscapeString(id) + `" href="https://api.xiaoheihe.cn/open_inapp/#heybox://%7B%22protocol_type%22%3A%22openUser%22%2C%22user_id%22%3A%22` + id + `%22%7D" target="_blank">@` + html.EscapeString(username) + `</a> `
@@ -288,14 +290,26 @@ func normalizeExplicitMentionTarget(target string) string {
 	target = strings.TrimSpace(target)
 	target = strings.TrimPrefix(target, "@")
 	target = strings.Trim(target, "：:，,。.!！?？、")
-	for _, suffix := range []string{"打个招呼", "打招呼", "问个好", "问好", "说说", "说两句", "说几句", "说一下", "聊聊", "聊两句", "聊几句", "聊一下", "讲两句", "讲几句", "怎么看", "怎么想", "什么看法", "的观点", "的说法", "的评论", "的话", "看看", "查看", "看下", "来看", "评价", "一下", "一口"} {
-		target = strings.TrimSuffix(target, suffix)
-	}
-	target = strings.Trim(target, "：:，,。.!！?？、")
+	target = trimExplicitMentionControls(target)
 	if isAmbiguousMentionTarget(target) || strings.Contains(target, "机器人") {
 		return ""
 	}
 	return target
+}
+
+func trimExplicitMentionControls(target string) string {
+	for {
+		previous := target
+		target = xhhEmojiPattern.ReplaceAllString(target, "")
+		target = strings.Trim(target, "：:，,。.!！?？、")
+		for _, suffix := range []string{"打个招呼", "打招呼", "问个好", "问好", "说说", "说两句", "说几句", "说一下", "聊聊", "聊两句", "聊几句", "聊一下", "讲两句", "讲几句", "怎么看", "怎么想", "什么看法", "的观点", "的说法", "的评论", "的话", "看看", "查看", "看下", "来看", "评价", "一下", "一口"} {
+			target = strings.TrimSuffix(target, suffix)
+		}
+		target = strings.Trim(target, "：:，,。.!！?？、")
+		if target == previous {
+			return target
+		}
+	}
 }
 
 func isAmbiguousMentionTarget(target string) bool {
