@@ -40,8 +40,13 @@ type LinkInfoS struct {
 		TotalPage     int            `json:"total_page"`
 		HasMoreFloors int            `json:"has_more_floors"`
 		Link          struct {
-			Title  string      `json:"title"`
-			Text   string      `json:"text"`
+			Title  string          `json:"title"`
+			Text   string          `json:"text"`
+			UserID json.RawMessage `json:"userid"`
+			User   struct {
+				UserID   json.RawMessage `json:"userid"`
+				UserName string          `json:"username"`
+			} `json:"user"`
 			Topics []ai.Topics `json:"topics"`
 			Tags   []ai.Tags   `json:"hashtags"`
 		} `json:"link"`
@@ -305,36 +310,48 @@ func isAmbiguousMentionTarget(target string) bool {
 	}
 }
 
+const (
+	maxMentionSearchPages           = 20
+	maxMentionSearchSubCommentPages = 80
+)
+
 func findUserMentionInPost(linkID int, targetName string, currentUserID int) string {
 	firstResp, ok := fetchLinkInfoPage(linkID, 1)
 	if !ok {
 		return ""
 	}
 
+	if mention := findLinkAuthorMention(firstResp, targetName, currentUserID); mention != "" {
+		return mention
+	}
+
 	maxPage := firstResp.Result.TotalPage
 	if maxPage <= 0 {
 		maxPage = 1
 	}
-	if maxPage > 20 {
-		maxPage = 20
+	if maxPage > maxMentionSearchPages {
+		maxPage = maxMentionSearchPages
 	}
 
-	exact := findUserMentionInGroups(firstResp.Result.Comments, targetName, currentUserID, true)
+	subCommentPageBudget := maxMentionSearchSubCommentPages
+	exact, partialMatches := findUserMentionInGroups(firstResp.Result.Comments, targetName, currentUserID, &subCommentPageBudget)
 	if exact != "" {
 		return exact
 	}
-	partialMatches := collectUserMentionMatches(firstResp.Result.Comments, targetName, currentUserID)
 
 	for page := 2; page <= maxPage; page++ {
 		pageResp, ok := fetchLinkInfoPage(linkID, page)
 		if !ok {
 			continue
 		}
-		exact = findUserMentionInGroups(pageResp.Result.Comments, targetName, currentUserID, true)
+		if mention := findLinkAuthorMention(pageResp, targetName, currentUserID); mention != "" {
+			return mention
+		}
+		exact, matches := findUserMentionInGroups(pageResp.Result.Comments, targetName, currentUserID, &subCommentPageBudget)
 		if exact != "" {
 			return exact
 		}
-		partialMatches = append(partialMatches, collectUserMentionMatches(pageResp.Result.Comments, targetName, currentUserID)...)
+		partialMatches = append(partialMatches, matches...)
 	}
 
 	unique := map[int]string{}
@@ -350,36 +367,99 @@ func findUserMentionInPost(linkID int, targetName string, currentUserID int) str
 	return ""
 }
 
-func findUserMentionInGroups(groups []commentGroup, targetName string, currentUserID int, exact bool) string {
-	for _, group := range groups {
-		matches := collectUserMentionMatches([]commentGroup{group}, targetName, currentUserID)
-		for _, match := range matches {
-			if exact && normalizeMentionName(match.User.UserName) == normalizeMentionName(targetName) {
-				return buildMention(match.UserID, match.User.UserName)
-			}
-		}
+func findLinkAuthorMention(resp LinkInfoS, targetName string, currentUserID int) string {
+	uid := jsonInt(resp.Result.Link.UserID)
+	if uid == 0 {
+		uid = jsonInt(resp.Result.Link.User.UserID)
 	}
-	return ""
+	username := resp.Result.Link.User.UserName
+	if !mentionUserMatches(uid, username, targetName, currentUserID) {
+		return ""
+	}
+	return buildMention(uid, username)
 }
 
-func collectUserMentionMatches(groups []commentGroup, targetName string, currentUserID int) []CommentInfo {
-	var matches []CommentInfo
-	target := normalizeMentionName(targetName)
-	if target == "" {
-		return matches
-	}
+func findUserMentionInGroups(groups []commentGroup, targetName string, currentUserID int, subCommentPageBudget *int) (string, []CommentInfo) {
+	var partialMatches []CommentInfo
 	for _, group := range groups {
-		for _, comment := range group.Comment {
-			username := normalizeMentionName(comment.User.UserName)
-			if comment.UserID == 0 || comment.UserID == currentUserID || comment.User.UserName == "" || strconv.Itoa(comment.UserID) == Info.HeyBoxId {
-				continue
+		comments := expandMentionSearchComments(group, subCommentPageBudget)
+		matches := collectUserMentionMatches(comments, targetName, currentUserID)
+		for _, match := range matches {
+			if normalizeMentionName(match.User.UserName) == normalizeMentionName(targetName) {
+				return buildMention(match.UserID, match.User.UserName), partialMatches
 			}
-			if username == target || strings.Contains(username, target) {
-				matches = append(matches, comment)
-			}
+		}
+		partialMatches = append(partialMatches, matches...)
+	}
+	return "", partialMatches
+}
+
+func expandMentionSearchComments(group commentGroup, subCommentPageBudget *int) []CommentInfo {
+	comments := make([]CommentInfo, len(group.Comment))
+	copy(comments, group.Comment)
+	if len(comments) == 0 || comments[0].CommentID == 0 || subCommentPageBudget == nil || *subCommentPageBudget <= 0 {
+		return comments
+	}
+	return fetchAllSubComments(comments[0].CommentID, comments, subCommentPageBudget)
+}
+
+func fetchAllSubComments(rootCommentID int, comments []CommentInfo, subCommentPageBudget *int) []CommentInfo {
+	lastVal := comments[len(comments)-1].CommentID
+	for *subCommentPageBudget > 0 {
+		*subCommentPageBudget--
+		other := "?root_comment_id=" + strconv.Itoa(rootCommentID) + "&lastval=" + strconv.Itoa(lastVal)
+		resp := SendReq("GET", "/bbs/app/comment/sub/comments", nil, other)
+		if resp == nil {
+			return comments
+		}
+
+		Dbyte, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			loger.Loger.Error("[XHH]无法读取子评论响应体", zap.Error(err))
+			return comments
+		}
+
+		var data SubCommentsS
+		err = json.Unmarshal(Dbyte, &data)
+		if err != nil {
+			loger.Loger.Error("[XHH]子评论反序列化失败", zap.Error(err), zap.Any("data", string(Dbyte)))
+			return comments
+		}
+		if data.Stat != "ok" || len(data.Result.Comments) == 0 {
+			return comments
+		}
+
+		comments = append(comments, data.Result.Comments...)
+		if !data.Result.HasMore {
+			return comments
+		}
+		if data.Result.LastVal != 0 && data.Result.LastVal != lastVal {
+			lastVal = data.Result.LastVal
+		} else {
+			lastVal = data.Result.Comments[len(data.Result.Comments)-1].CommentID
+		}
+	}
+	return comments
+}
+
+func collectUserMentionMatches(comments []CommentInfo, targetName string, currentUserID int) []CommentInfo {
+	var matches []CommentInfo
+	for _, comment := range comments {
+		if mentionUserMatches(comment.UserID, comment.User.UserName, targetName, currentUserID) {
+			matches = append(matches, comment)
 		}
 	}
 	return matches
+}
+
+func mentionUserMatches(userID int, username string, targetName string, currentUserID int) bool {
+	if userID == 0 || userID == currentUserID || username == "" || strconv.Itoa(userID) == Info.HeyBoxId {
+		return false
+	}
+	target := normalizeMentionName(targetName)
+	username = normalizeMentionName(username)
+	return username == target || strings.Contains(username, target)
 }
 
 func normalizeMentionName(name string) string {
