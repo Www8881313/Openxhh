@@ -52,6 +52,7 @@ func GetAiReply(Contents []Content, UserSay string, Topics []Topics, Tags []Tags
 		return ""
 	}
 	text := resp.Choices[0].Msg.Content
+	appendTokenRecord(aiModel, resp.Usage.TotalToken)
 	loger.Loger.Info("[Ai]Ai说：", zap.String("text", text), zap.Int("本次消耗token", resp.Usage.TotalToken))
 	return text
 }

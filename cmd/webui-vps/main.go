@@ -35,10 +35,12 @@ import (
 
 const defaultAddr = ":29173"
 const journalName = "__journal__"
+const tokenRecordFileName = "token_records.jsonl"
 const maxConfigBodySize = 1 << 20
 
 var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 var serviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
+var logTimePattern = regexp.MustCompile(`(20\d{2}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2}))?`)
 
 //go:embed assets/admin-avatar.png
 var adminAvatar []byte
@@ -68,6 +70,12 @@ type logFile struct {
 	Label   string `json:"label"`
 	Size    int64  `json:"size"`
 	ModTime string `json:"modTime"`
+}
+
+type tokenRecord struct {
+	Time   string `json:"time"`
+	Model  string `json:"model,omitempty"`
+	Tokens int64  `json:"tokens"`
 }
 
 type regenerateMessageRequest struct {
@@ -750,7 +758,8 @@ func (s *serverState) handleRecords(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": content})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": content, "sources": sources})
+	tokens := s.readTokenRecords(content)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": content, "sources": sources, "tokens": tokens})
 }
 
 func (s *serverState) readRecordLogs() (string, int, error) {
@@ -784,6 +793,126 @@ func readWholeFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(string(data), "\n"), nil
+}
+
+func (s *serverState) readTokenRecords(logContent string) []tokenRecord {
+	path := filepath.Join(s.rootDir, tokenRecordFileName)
+	records, err := readTokenRecordFile(path)
+	if err == nil && len(records) > 0 {
+		return records
+	}
+	backfill := tokenRecordsFromLogs(logContent)
+	if len(backfill) > 0 {
+		writeTokenRecordFileIfEmpty(path, backfill)
+	}
+	return backfill
+}
+
+func readTokenRecordFile(path string) ([]tokenRecord, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var records []tokenRecord
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var record tokenRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil || record.Tokens <= 0 {
+			continue
+		}
+		records = append(records, record)
+	}
+	if err := scanner.Err(); err != nil {
+		return records, err
+	}
+	return records, nil
+}
+
+func writeTokenRecordFileIfEmpty(path string, records []tokenRecord) {
+	info, err := os.Stat(path)
+	if err == nil && info.Size() > 0 {
+		return
+	}
+	var builder strings.Builder
+	encoder := json.NewEncoder(&builder)
+	for _, record := range records {
+		if record.Tokens > 0 {
+			_ = encoder.Encode(record)
+		}
+	}
+	if builder.Len() == 0 {
+		return
+	}
+	_ = os.WriteFile(path, []byte(builder.String()), 0644)
+}
+
+func tokenRecordsFromLogs(content string) []tokenRecord {
+	if content == "" {
+		return nil
+	}
+	var records []tokenRecord
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "[Ai]Ai说：") {
+			continue
+		}
+		tokens := tokenValueFromLogLine(line)
+		if tokens <= 0 {
+			continue
+		}
+		records = append(records, tokenRecord{Time: timeFromLogLine(line), Tokens: tokens})
+	}
+	return records
+}
+
+func tokenValueFromLogLine(line string) int64 {
+	start := strings.Index(line, "{")
+	if start < 0 {
+		return 0
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(line[start:]), &payload); err != nil {
+		return 0
+	}
+	for _, key := range []string{"本次消耗token", "total_tokens", "totalToken", "tokens"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			if typed > 0 {
+				return int64(typed)
+			}
+		case int64:
+			if typed > 0 {
+				return typed
+			}
+		case string:
+			var parsed int64
+			if _, err := fmt.Sscan(typed, &parsed); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func timeFromLogLine(line string) string {
+	match := logTimePattern.FindStringSubmatch(line)
+	if len(match) == 0 {
+		return ""
+	}
+	if len(match) > 2 && match[2] != "" {
+		return match[1] + " " + match[2]
+	}
+	return match[1]
 }
 
 func listLogFiles(logDir string) ([]logFile, error) {
@@ -1077,7 +1206,7 @@ async function loadLogs(){const data=await api('/api/logs');const files=data.fil
 async function loadCurrentLog(){if(logPaused||hasLogSelection())return;if(!currentLog){renderLog('');return}try{const data=await api('/api/logs/read?file='+encodeURIComponent(currentLog));renderLog(data.content||'')}catch(err){renderLog('日志读取失败: '+err.message)}}
 
 function renderLog(content){rawLogContent=content||'';const box=logOutput.parentElement;const scrollTop=box.scrollTop;const shouldScrollLatest=logScrollLatestOnce;logScrollLatestOnce=false;document.querySelector('#currentSource').textContent=currentLogLabel||'暂无日志源';renderLogLines(filterLogContent(rawLogContent));box.scrollTop=shouldScrollLatest?box.scrollHeight:Math.min(scrollTop,box.scrollHeight)}
-async function loadAllRecords(manual=false){if(!manual&&activeView!=='home'&&activeView!=='records')return;if(manual&&recordsToast)recordsToast.textContent='正在刷新所有记录...';try{const data=await api('/api/records');const lines=(data.content||'').split('\n').filter(Boolean);const interactions=dedupeInteractions(parseInteractions(lines));const completed=interactions.filter(item=>item.status==='已回复'&&item.question&&item.reply);const failed=interactions.filter(item=>isErrorStatus(item.status)&&item.question&&item.reply).length;const pending=interactions.filter(item=>item.status==='待回复'||item.status==='待重试').length;const records=interactions.filter(item=>(item.status==='已回复'||isErrorStatus(item.status))&&item.question&&item.reply);document.querySelector('#metricStatus').textContent=formatCount(interactions.length);document.querySelector('#metricLines').textContent=formatCount(completed.length);document.querySelector('#metricErrors').textContent=formatCount(failed);document.querySelector('#metricFiles').textContent=formatCount(pending);renderRecords(records.slice().reverse());renderTrend(completed);renderTokenRecords(interactions.filter(item=>item.tokens));if(recordsMeta)recordsMeta.textContent='已读取 '+formatCount(records.length)+' 条聊天记录，来源 '+formatCount(data.sources||0)+' 个日志源';if(manual&&recordsToast)recordsToast.textContent='已刷新所有记录'}catch(err){if(recordsMeta)recordsMeta.textContent='记录读取失败：'+err.message;if(recordsToast)recordsToast.textContent=err.message}}
+async function loadAllRecords(manual=false){if(!manual&&activeView!=='home'&&activeView!=='records')return;if(manual&&recordsToast)recordsToast.textContent='正在刷新所有记录...';try{const data=await api('/api/records');const lines=(data.content||'').split('\n').filter(Boolean);const interactions=dedupeInteractions(parseInteractions(lines));const completed=interactions.filter(item=>item.status==='已回复'&&item.question&&item.reply);const failed=interactions.filter(item=>isErrorStatus(item.status)&&item.question&&item.reply).length;const pending=interactions.filter(item=>item.status==='待回复'||item.status==='待重试').length;const records=interactions.filter(item=>(item.status==='已回复'||isErrorStatus(item.status))&&item.question&&item.reply);const tokenItems=Array.isArray(data.tokens)&&data.tokens.length?data.tokens:interactions.filter(item=>item.tokens);document.querySelector('#metricStatus').textContent=formatCount(interactions.length);document.querySelector('#metricLines').textContent=formatCount(completed.length);document.querySelector('#metricErrors').textContent=formatCount(failed);document.querySelector('#metricFiles').textContent=formatCount(pending);renderRecords(records.slice().reverse());renderTrend(completed);renderTokenRecords(tokenItems);if(recordsMeta)recordsMeta.textContent='已读取 '+formatCount(records.length)+' 条聊天记录，来源 '+formatCount(data.sources||0)+' 个日志源';if(manual&&recordsToast)recordsToast.textContent='已刷新所有记录'}catch(err){if(recordsMeta)recordsMeta.textContent='记录读取失败：'+err.message;if(recordsToast)recordsToast.textContent=err.message}}
 function renderRecords(items){if(!recordsBody)return;const signature=JSON.stringify(items.map(item=>recordKey(item)+'|'+(item.reply||'')+'|'+(item.status||'')+'|'+(item.tokens||0)));if(signature===recordsSignature)return;rememberRecordScrolls();recordsSignature=signature;recordsBody.innerHTML='';if(!items.length){const row=document.createElement('tr');const cell=document.createElement('td');cell.colSpan=6;cell.textContent='暂无可识别的用户提问/机器人回复记录';row.appendChild(cell);recordsBody.appendChild(row);return}items.forEach((item,index)=>{const key=recordKey(item,index);const row=document.createElement('tr');appendCell(row,item.time);appendCell(row,item.user||'未知用户');appendCell(row,item.question,'content-cell',key+':question');appendCell(row,item.reply||'—','content-cell',key+':reply');const statusCell=document.createElement('td');const badge=document.createElement('span');badge.className='badge '+(item.status==='已回复'?'ok':isErrorStatus(item.status)?'error':'warn');badge.textContent=item.status;statusCell.appendChild(badge);const copyBtn=document.createElement('button');copyBtn.type='button';copyBtn.className='copy-btn';copyBtn.textContent='复制';copyBtn.addEventListener('click',async()=>{await copyText(recordText(item));copyBtn.textContent='已复制';setTimeout(()=>copyBtn.textContent='复制',900)});statusCell.appendChild(copyBtn);row.appendChild(statusCell);const actionCell=document.createElement('td');const stack=document.createElement('div');stack.className='action-stack';const regenerateBtn=document.createElement('button');regenerateBtn.type='button';regenerateBtn.className='copy-btn';regenerateBtn.textContent='重新生成';const feedback=document.createElement('span');feedback.className='action-feedback';regenerateBtn.addEventListener('click',()=>regenerateMessage(item,regenerateBtn,feedback));stack.appendChild(regenerateBtn);stack.appendChild(feedback);actionCell.appendChild(stack);row.appendChild(actionCell);recordsBody.appendChild(row)})}
 function rememberRecordScrolls(){recordsBody?.querySelectorAll('.clip-cell[data-scroll-key]').forEach(cell=>recordScrollMemory.set(cell.dataset.scrollKey,cell.scrollTop))}
 function recordKey(item,index=0){if(item.msgId||item.commentId)return [item.msgId||'',item.commentId||''].join('|');const fallback=[item.time||'',normalizeText(item.user||''),normalizeText(item.question||''),normalizeText(item.reply||'')].join('|');return fallback||String(index)}
@@ -1086,7 +1215,8 @@ function rerenderCurrentLog(){clearLogLineSelection();window.getSelection()?.rem
 function filterLogContent(content){if(!content)return'';const mode=logFilter?.value||'all';const keyword=(logKeyword?.value||'').trim().toLowerCase();return content.split('\n').filter(line=>matchesLogFilter(line,mode)&&(!keyword||line.toLowerCase().includes(keyword))).join('\n')}
 function matchesLogFilter(line,mode){switch(mode){case'error':return isFailureLine(line);case'ask':return line.includes('[Ai]正在询问Ai');case'reply':return line.includes('[Ai]Ai说：');case'image':return /图片|生图|画图|生成图片|image|upload|imgs/i.test(line);default:return true}}
 function appendCell(row,text,className,scrollKey){const cell=document.createElement('td');if(className){cell.className=className;const inner=document.createElement('div');inner.className='clip-cell';inner.textContent=text||'—';if(scrollKey){inner.dataset.scrollKey=scrollKey;inner.scrollTop=recordScrollMemory.get(scrollKey)||0;inner.addEventListener('scroll',()=>recordScrollMemory.set(scrollKey,inner.scrollTop),{passive:true})}cell.appendChild(inner)}else{cell.textContent=text||'—'}row.appendChild(cell)}
-function renderTokenRecords(items){const totalEl=document.querySelector('#tokenTotal');const hourEl=document.querySelector('#tokenHour');const dayEl=document.querySelector('#tokenDay');const now=Date.now();let total=0;let hour=0;let day=0;for(const item of items){if(!item.tokens)continue;total+=item.tokens;const time=parseItemTime(item.time);if(!time)continue;const age=now-time.getTime();if(age>=0&&age<=3600000)hour+=item.tokens;if(age>=0&&age<=86400000)day+=item.tokens}if(totalEl)totalEl.textContent=formatCount(total);if(hourEl)hourEl.textContent=formatCount(hour);if(dayEl)dayEl.textContent=formatCount(day)}
+function renderTokenRecords(items){const totalEl=document.querySelector('#tokenTotal');const hourEl=document.querySelector('#tokenHour');const dayEl=document.querySelector('#tokenDay');const now=Date.now();let total=0;let hour=0;let day=0;for(const item of items){if(!item.tokens)continue;total+=item.tokens;const time=parseItemTime(item.time);if(!time)continue;const age=now-time.getTime();if(age>=0&&age<=3600000)hour+=item.tokens;if(age>=0&&age<=86400000)day+=item.tokens}setTokenText(totalEl,total);setTokenText(hourEl,hour);setTokenText(dayEl,day)}
+function setTokenText(el,value){if(!el)return;el.textContent=formatTokenCount(value);el.title=formatCount(value)+' token'}
 function parseInteractions(lines){const items=[];let pending=null;let lastAnswered=null;let currentMessage=null;for(const line of lines){if(line.includes('[XHH]正在处理@消息')){currentMessage=parseProcessingLine(line);continue}if(line.includes('[Ai]正在询问Ai')){const next=attachMessageContext(parseQuestionLine(line),currentMessage);if(pending&&pending.question){if(sameInteraction(pending,next))continue;items.push(finalizePending(pending))}pending=next;continue}if(line.includes('[Ai]Ai说：')){if(!pending||!pending.question){pending=null;continue}pending.reply=extractJsonField(line,'text')||stripLogPrefix(line);pending.tokens=extractToken(line);pending.status='已回复';items.push(pending);lastAnswered=pending;pending=null;continue}if(isSendAnomalyLine(line)&&lastAnswered&&lastAnswered.status==='已回复'){attachMessageContext(lastAnswered,parseAnomalyLine(line));lastAnswered.status='异常发送';lastAnswered.lastError=stripLogPrefix(line);continue}if(isFailureLine(line)&&pending&&pending.question&&!pending.lastError){pending.lastError=stripLogPrefix(line);pending.status='待重试'}}if(pending&&pending.question)items.push(finalizePending(pending));return items}
 function dedupeInteractions(items){const result=[];for(const item of items){const last=result[result.length-1];if(last&&sameInteraction(last,item)){if(last.status==='失败'&&item.status==='已回复'){result[result.length-1]=item;continue}if(last.status===item.status){last.msgId=item.msgId||last.msgId;last.reply=item.reply||last.reply;last.tokens=item.tokens||last.tokens;last.time=item.time||last.time;continue}}result.push(item)}return result}
 function sameInteraction(a,b){if(a?.msgId&&b?.msgId&&a.msgId!==b.msgId)return false;if(a?.commentId&&b?.commentId&&a.commentId!==b.commentId)return false;return normalizeText(a?.user)===normalizeText(b?.user)&&normalizeText(a?.question)===normalizeText(b?.question)}
@@ -1125,6 +1255,8 @@ function extractPort(addr){if(!addr)return'';const parts=addr.split(':');return 
 function formatBytes(size){if(size<1024)return size+' B';if(size<1024*1024)return(size/1024).toFixed(1)+' KB';return(size/1024/1024).toFixed(1)+' MB'}
 function parseItemTime(value){if(!value||value==='—')return null;const date=new Date(String(value).replace(' ','T'));return Number.isNaN(date.getTime())?null:date}
 function formatCount(value){return Number(value||0).toLocaleString('zh-CN')}
+function formatTokenCount(value){const num=Number(value||0);if(num>=1e9)return trimUnit(num/1e9)+'b';if(num>=1e6)return trimUnit(num/1e6)+'m';if(num>=1e3)return trimUnit(num/1e3)+'k';return formatCount(num)}
+function trimUnit(value){return value>=100?value.toFixed(0):value>=10?value.toFixed(1).replace(/\.0$/,''):value.toFixed(2).replace(/\.00$/,'').replace(/0$/,'')}
 showApp(authed);
 </script>
 </body>
