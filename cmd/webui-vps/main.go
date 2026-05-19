@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"html/template"
 	"log"
 	"net"
@@ -41,6 +42,7 @@ const maxConfigBodySize = 1 << 20
 var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 var serviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
 var logTimePattern = regexp.MustCompile(`(20\d{2}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2}))?`)
+var htmlTagPattern = regexp.MustCompile(`<[^>]+>`)
 
 //go:embed assets/admin-avatar.png
 var adminAvatar []byte
@@ -76,6 +78,14 @@ type tokenRecord struct {
 	Time   string `json:"time"`
 	Model  string `json:"model,omitempty"`
 	Tokens int64  `json:"tokens"`
+}
+
+type regenerateCandidate struct {
+	MsgID     int64
+	CommentID int64
+	UserID    int64
+	UserName  string
+	Question  string
 }
 
 type regenerateMessageRequest struct {
@@ -646,25 +656,53 @@ func markSQLiteMessageByText(database *sql.DB, req regenerateMessageRequest) (in
 	if req.Question == "" {
 		return 0, nil
 	}
+	userName := validRegenerateUserName(req.UserName)
 	attempts := []struct {
 		where string
 		args  []any
 	}{
 		{"comment_text=? AND user_a_id=?", []any{req.Question, req.UserID}},
-		{"comment_text=? AND user_a_name=?", []any{req.Question, req.UserName}},
+		{"comment_text=? AND user_a_name=?", []any{req.Question, userName}},
 		{"comment_text=?", []any{req.Question}},
 	}
 	for _, attempt := range attempts {
 		if strings.Contains(attempt.where, "user_a_id") && req.UserID <= 0 {
 			continue
 		}
-		if strings.Contains(attempt.where, "user_a_name") && req.UserName == "" {
+		if strings.Contains(attempt.where, "user_a_name") && userName == "" {
 			continue
 		}
 		affected, err := execSQLiteRegenerate(database, "msg_id=(SELECT msg_id FROM at WHERE "+attempt.where+" ORDER BY msg_id DESC LIMIT 1)", attempt.args...)
 		if err != nil || affected > 0 {
 			return affected, err
 		}
+	}
+	return markSQLiteMessageByFuzzyText(database, req)
+}
+
+func markSQLiteMessageByFuzzyText(database *sql.DB, req regenerateMessageRequest) (int64, error) {
+	rows, err := database.Query("SELECT msg_id, comment_a_id, user_a_id, COALESCE(user_a_name, ''), COALESCE(comment_text, '') FROM at WHERE comment_text IS NOT NULL AND comment_text<>'' ORDER BY msg_id DESC")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var candidate regenerateCandidate
+		if err := rows.Scan(&candidate.MsgID, &candidate.CommentID, &candidate.UserID, &candidate.UserName, &candidate.Question); err != nil {
+			return 0, err
+		}
+		if !regenerateCandidateMatches(req, candidate) {
+			continue
+		}
+		if candidate.MsgID > 0 {
+			return execSQLiteRegenerate(database, "msg_id=?", candidate.MsgID)
+		}
+		if candidate.CommentID > 0 {
+			return execSQLiteRegenerate(database, "comment_a_id=?", candidate.CommentID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
 	}
 	return 0, nil
 }
@@ -704,19 +742,20 @@ func markPostgresMessageByText(ctx context.Context, pool *pgxpool.Pool, req rege
 	if req.Question == "" {
 		return 0, nil
 	}
+	userName := validRegenerateUserName(req.UserName)
 	attempts := []struct {
 		where string
 		args  []any
 	}{
 		{"comment_text=$1 AND user_a_id=$2", []any{req.Question, req.UserID}},
-		{"comment_text=$1 AND user_a_name=$2", []any{req.Question, req.UserName}},
+		{"comment_text=$1 AND user_a_name=$2", []any{req.Question, userName}},
 		{"comment_text=$1", []any{req.Question}},
 	}
 	for _, attempt := range attempts {
 		if strings.Contains(attempt.where, "user_a_id") && req.UserID <= 0 {
 			continue
 		}
-		if strings.Contains(attempt.where, "user_a_name") && req.UserName == "" {
+		if strings.Contains(attempt.where, "user_a_name") && userName == "" {
 			continue
 		}
 		affected, err := execPostgresRegenerate(ctx, pool, "msg_id=(SELECT msg_id FROM at WHERE "+attempt.where+" ORDER BY msg_id DESC LIMIT 1)", attempt.args...)
@@ -724,7 +763,100 @@ func markPostgresMessageByText(ctx context.Context, pool *pgxpool.Pool, req rege
 			return affected, err
 		}
 	}
+	return markPostgresMessageByFuzzyText(ctx, pool, req)
+}
+
+func markPostgresMessageByFuzzyText(ctx context.Context, pool *pgxpool.Pool, req regenerateMessageRequest) (int64, error) {
+	rows, err := pool.Query(ctx, "SELECT msg_id, comment_a_id, user_a_id, COALESCE(user_a_name, ''), COALESCE(comment_text, '') FROM at WHERE comment_text IS NOT NULL AND comment_text<>'' ORDER BY msg_id DESC")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var candidate regenerateCandidate
+		if err := rows.Scan(&candidate.MsgID, &candidate.CommentID, &candidate.UserID, &candidate.UserName, &candidate.Question); err != nil {
+			return 0, err
+		}
+		if !regenerateCandidateMatches(req, candidate) {
+			continue
+		}
+		if candidate.MsgID > 0 {
+			return execPostgresRegenerate(ctx, pool, "msg_id=$1", candidate.MsgID)
+		}
+		if candidate.CommentID > 0 {
+			return execPostgresRegenerate(ctx, pool, "comment_a_id=$1", candidate.CommentID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
 	return 0, nil
+}
+
+func regenerateCandidateMatches(req regenerateMessageRequest, candidate regenerateCandidate) bool {
+	if req.UserID > 0 && candidate.UserID > 0 && req.UserID != candidate.UserID {
+		return false
+	}
+	reqUserName := validRegenerateUserName(req.UserName)
+	candidateUserName := validRegenerateUserName(candidate.UserName)
+	if reqUserName != "" && candidateUserName != "" && normalizeRegenerateText(reqUserName) != normalizeRegenerateText(candidateUserName) {
+		return false
+	}
+	return regenerateTextMatches(req.Question, candidate.Question)
+}
+
+func regenerateTextMatches(left string, right string) bool {
+	leftVariants := regenerateTextVariants(left)
+	rightVariants := regenerateTextVariants(right)
+	for _, leftValue := range leftVariants {
+		for _, rightValue := range rightVariants {
+			if leftValue == "" || rightValue == "" {
+				continue
+			}
+			if leftValue == rightValue {
+				return true
+			}
+			if len(leftValue) >= 8 && strings.Contains(rightValue, leftValue) {
+				return true
+			}
+			if len(rightValue) >= 8 && strings.Contains(leftValue, rightValue) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func regenerateTextVariants(text string) []string {
+	base := normalizeRegenerateText(text)
+	withoutMention := normalizeRegenerateText(stripLeadingMentions(text))
+	if withoutMention == base {
+		return []string{base}
+	}
+	return []string{base, withoutMention}
+}
+
+func normalizeRegenerateText(text string) string {
+	text = html.UnescapeString(text)
+	text = htmlTagPattern.ReplaceAllString(text, "")
+	text = strings.ReplaceAll(text, string(rune(0x00a0)), " ")
+	return strings.ToLower(strings.Join(strings.Fields(text), ""))
+}
+
+func stripLeadingMentions(text string) string {
+	fields := strings.Fields(text)
+	for len(fields) > 0 && strings.HasPrefix(fields[0], "@") {
+		fields = fields[1:]
+	}
+	return strings.Join(fields, " ")
+}
+
+func validRegenerateUserName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "未知用户" || name == "—" {
+		return ""
+	}
+	return name
 }
 
 func postgresDSN(cfg appConfig) string {
