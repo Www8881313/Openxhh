@@ -38,6 +38,7 @@ const defaultAddr = ":29173"
 const journalName = "__journal__"
 const tokenRecordFileName = "token_records.jsonl"
 const maxConfigBodySize = 1 << 20
+const maxRecordLinkLookupIDs = 300
 
 var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 var serviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
@@ -78,6 +79,11 @@ type tokenRecord struct {
 	Time   string `json:"time"`
 	Model  string `json:"model,omitempty"`
 	Tokens int64  `json:"tokens"`
+}
+
+type recordLinkLookup struct {
+	ByMsg     map[int64]int64 `json:"byMsg"`
+	ByComment map[int64]int64 `json:"byComment"`
 }
 
 type regenerateCandidate struct {
@@ -913,7 +919,8 @@ func (s *serverState) handleRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tokens := s.readTokenRecords(content)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": content, "sources": sources, "tokens": tokens})
+	links := s.readRecordLinkLookup(content)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "content": content, "sources": sources, "tokens": tokens, "links": links})
 }
 
 func (s *serverState) readRecordLogs(recentOnly bool) (string, int, error) {
@@ -960,6 +967,215 @@ func (s *serverState) readRecordLogs(recentOnly bool) (string, int, error) {
 		return content, 0, err
 	}
 	return content, 1, nil
+}
+
+func (s *serverState) readRecordLinkLookup(logContent string) recordLinkLookup {
+	lookup := recordLinkLookup{ByMsg: map[int64]int64{}, ByComment: map[int64]int64{}}
+	msgIDs, commentIDs := recordLinkLookupIDs(logContent)
+	if len(msgIDs) == 0 && len(commentIDs) == 0 {
+		return lookup
+	}
+	cfg, err := s.readConfigForRecordLookup()
+	if err != nil {
+		return lookup
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.DataBase.Type)) {
+	case "", "sqlite":
+		_ = s.fillSQLiteRecordLinkLookup(msgIDs, commentIDs, &lookup)
+	case "pg", "postgres", "postgresql":
+		_ = fillPostgresRecordLinkLookup(cfg, msgIDs, commentIDs, &lookup)
+	}
+	return lookup
+}
+
+func (s *serverState) readConfigForRecordLookup() (appConfig, error) {
+	cfg := defaultConfig()
+	data, err := os.ReadFile(s.configPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return cfg, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, err
+	}
+	applyConfigDefaults(&cfg)
+	return cfg, nil
+}
+
+func recordLinkLookupIDs(content string) ([]int64, []int64) {
+	msgSet := map[int64]struct{}{}
+	commentSet := map[int64]struct{}{}
+	for _, line := range strings.Split(content, "\n") {
+		payload := logJSONPayload(line)
+		if payload == nil || logIntField(payload, "link_id", "linkId") > 0 {
+			continue
+		}
+		if msgID := logIntField(payload, "msg_id", "msgId", "message_id"); msgID > 0 && len(msgSet) < maxRecordLinkLookupIDs {
+			msgSet[msgID] = struct{}{}
+		}
+		if commentID := logIntField(payload, "comment_id", "commentId", "reply_id"); commentID > 0 && len(commentSet) < maxRecordLinkLookupIDs {
+			commentSet[commentID] = struct{}{}
+		}
+	}
+	return int64SetValues(msgSet), int64SetValues(commentSet)
+}
+
+func logJSONPayload(line string) map[string]any {
+	start := strings.Index(line, "{")
+	if start < 0 {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(line[start:]), &payload); err != nil {
+		return nil
+	}
+	return payload
+}
+
+func logIntField(payload map[string]any, fields ...string) int64 {
+	for _, field := range fields {
+		value, ok := payload[field]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			if typed > 0 {
+				return int64(typed)
+			}
+		case int64:
+			if typed > 0 {
+				return typed
+			}
+		case int:
+			if typed > 0 {
+				return int64(typed)
+			}
+		case json.Number:
+			parsed, err := typed.Int64()
+			if err == nil && parsed > 0 {
+				return parsed
+			}
+		case string:
+			var parsed int64
+			if _, err := fmt.Sscan(typed, &parsed); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func int64SetValues(set map[int64]struct{}) []int64 {
+	values := make([]int64, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return values
+}
+
+func (s *serverState) fillSQLiteRecordLinkLookup(msgIDs, commentIDs []int64, lookup *recordLinkLookup) error {
+	if _, err := os.Stat(filepath.Join(s.rootDir, "sql.db")); err != nil {
+		return nil
+	}
+	database, err := s.openSQLiteDatabase()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := fillSQLiteRecordLinkMap(database, "msg_id", msgIDs, lookup.ByMsg); err != nil {
+		return err
+	}
+	return fillSQLiteRecordLinkMap(database, "comment_a_id", commentIDs, lookup.ByComment)
+}
+
+func fillSQLiteRecordLinkMap(database *sql.DB, column string, ids []int64, target map[int64]int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	query := fmt.Sprintf("SELECT %s, link_id FROM at WHERE link_id IS NOT NULL AND link_id>0 AND %s IN (%s)", column, column, sqlitePlaceholders(len(ids)))
+	args := int64Args(ids)
+	rows, err := database.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var linkID int64
+		if err := rows.Scan(&id, &linkID); err != nil {
+			return err
+		}
+		if id > 0 && linkID > 0 {
+			target[id] = linkID
+		}
+	}
+	return rows.Err()
+}
+
+func fillPostgresRecordLinkLookup(cfg appConfig, msgIDs, commentIDs []int64, lookup *recordLinkLookup) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, postgresDSN(cfg))
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := fillPostgresRecordLinkMap(ctx, pool, "msg_id", msgIDs, lookup.ByMsg); err != nil {
+		return err
+	}
+	return fillPostgresRecordLinkMap(ctx, pool, "comment_a_id", commentIDs, lookup.ByComment)
+}
+
+func fillPostgresRecordLinkMap(ctx context.Context, pool *pgxpool.Pool, column string, ids []int64, target map[int64]int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	query := fmt.Sprintf("SELECT %s, link_id FROM at WHERE link_id IS NOT NULL AND link_id>0 AND %s IN (%s)", column, column, postgresPlaceholders(len(ids)))
+	args := int64Args(ids)
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var linkID int64
+		if err := rows.Scan(&id, &linkID); err != nil {
+			return err
+		}
+		if id > 0 && linkID > 0 {
+			target[id] = linkID
+		}
+	}
+	return rows.Err()
+}
+
+func sqlitePlaceholders(count int) string {
+	values := make([]string, count)
+	for i := range values {
+		values[i] = "?"
+	}
+	return strings.Join(values, ",")
+}
+
+func postgresPlaceholders(count int) string {
+	values := make([]string, count)
+	for i := range values {
+		values[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return strings.Join(values, ",")
+}
+
+func int64Args(values []int64) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
 }
 
 func readRecentLogFile(path string, cutoff time.Time) (string, error) {
@@ -1439,6 +1655,7 @@ async function loadAllRecords(manual=false){
 		const data=await api(requestPath)
 		const lines=(data.content||'').split('\n').filter(Boolean)
 		const interactions=dedupeInteractions(parseInteractions(lines))
+		applyRecordLinks(interactions,data.links)
 		const completed=interactions.filter(item=>item.status==='已回复'&&item.question&&item.reply)
 		const failed=interactions.filter(item=>isErrorStatus(item.status)&&item.question&&item.reply).length
 		const pending=interactions.filter(item=>item.status==='待回复'||item.status==='待重试').length
@@ -1464,6 +1681,7 @@ async function loadAllRecords(manual=false){
 function renderRecords(items){if(!recordsBody)return;const signature=JSON.stringify(items.map(item=>recordKey(item)+'|'+(item.reply||'')+'|'+(item.status||'')+'|'+(item.tokens||0)+'|'+(item.linkId||0)));if(signature===recordsSignature)return;rememberRecordScrolls();recordsSignature=signature;recordsBody.innerHTML='';if(!items.length){const row=document.createElement('tr');const cell=document.createElement('td');cell.colSpan=7;cell.textContent='暂无最近24小时可识别的用户提问/机器人回复记录';row.appendChild(cell);recordsBody.appendChild(row);return}items.forEach((item,index)=>{const key=recordKey(item,index);const row=document.createElement('tr');appendCell(row,item.time);appendCell(row,item.user||'未知用户');appendCell(row,item.question,'content-cell',key+':question');appendCell(row,item.reply||'—','content-cell',key+':reply');const statusCell=document.createElement('td');const badge=document.createElement('span');badge.className='badge '+(item.status==='已回复'?'ok':isErrorStatus(item.status)?'error':'warn');badge.textContent=item.status;statusCell.appendChild(badge);const copyBtn=document.createElement('button');copyBtn.type='button';copyBtn.className='copy-btn';copyBtn.textContent='复制';copyBtn.addEventListener('click',async()=>{await copyText(recordText(item));copyBtn.textContent='已复制';setTimeout(()=>copyBtn.textContent='复制',900)});statusCell.appendChild(copyBtn);row.appendChild(statusCell);appendPostCell(row,item);const actionCell=document.createElement('td');const stack=document.createElement('div');stack.className='action-stack';const regenerateBtn=document.createElement('button');regenerateBtn.type='button';regenerateBtn.className='copy-btn';regenerateBtn.textContent='重新生成';const feedback=document.createElement('span');feedback.className='action-feedback';regenerateBtn.addEventListener('click',()=>regenerateMessage(item,regenerateBtn,feedback));stack.appendChild(regenerateBtn);stack.appendChild(feedback);actionCell.appendChild(stack);row.appendChild(actionCell);recordsBody.appendChild(row)})}
 function rememberRecordScrolls(){recordsBody?.querySelectorAll('.clip-cell[data-scroll-key]').forEach(cell=>recordScrollMemory.set(cell.dataset.scrollKey,cell.scrollTop))}
 function recordKey(item,index=0){if(item.msgId||item.commentId)return [item.msgId||'',item.commentId||''].join('|');const fallback=[item.linkId||'',item.time||'',normalizeText(item.user||''),normalizeText(item.question||''),normalizeText(item.reply||'')].join('|');return fallback||String(index)}
+function applyRecordLinks(items,links){if(!links)return;const byMsg=links.byMsg||{};const byComment=links.byComment||{};for(const item of items){if(item.linkId)continue;const linkId=(item.msgId&&byMsg[String(item.msgId)])||(item.commentId&&byComment[String(item.commentId)]);if(linkId)item.linkId=Number(linkId)||0}}
 function renderLogLines(content){const selectedLines=selectedLogLineIndexes();logOutput.innerHTML='';logOutput.dataset.raw=content||'';logOutput.classList.toggle('empty',!content);if(!content){logOutput.textContent='暂无日志。';lastSelectedLogLine=-1;return}content.split('\n').forEach((line,index)=>{const item=document.createElement('span');item.className='log-line';item.dataset.index=String(index);item.textContent=line||' ';item.title='点击选择这一行，Shift 点击选择范围，再点复制选中';item.classList.toggle('selected',selectedLines.has(index));item.addEventListener('click',event=>toggleLogLineSelection(index,event.shiftKey));logOutput.appendChild(item)})}
 function rerenderCurrentLog(){clearLogLineSelection();window.getSelection()?.removeAllRanges();renderLog(rawLogContent)}
 function filterLogContent(content){if(!content)return'';const mode=logFilter?.value||'all';const keyword=(logKeyword?.value||'').trim().toLowerCase();return content.split('\n').filter(line=>matchesLogFilter(line,mode)&&(!keyword||line.toLowerCase().includes(keyword))).join('\n')}
