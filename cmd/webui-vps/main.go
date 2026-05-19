@@ -623,7 +623,7 @@ func (s *serverState) markMessageUnreplied(cfg appConfig, req regenerateMessageR
 }
 
 func (s *serverState) markSQLiteMessageUnreplied(req regenerateMessageRequest) (int64, error) {
-	database, err := sql.Open("sqlite3", filepath.Join(s.rootDir, "sql.db"))
+	database, err := s.openSQLiteDatabase()
 	if err != nil {
 		return 0, err
 	}
@@ -641,6 +641,20 @@ func (s *serverState) markSQLiteMessageUnreplied(req regenerateMessageRequest) (
 		}
 	}
 	return markSQLiteMessageByText(database, req)
+}
+
+func (s *serverState) openSQLiteDatabase() (*sql.DB, error) {
+	database, err := sql.Open("sqlite3", filepath.Join(s.rootDir, "sql.db"))
+	if err != nil {
+		return nil, err
+	}
+	database.SetMaxOpenConns(1)
+	database.SetMaxIdleConns(1)
+	if _, err := database.Exec("PRAGMA busy_timeout=8000"); err != nil {
+		database.Close()
+		return nil, err
+	}
+	return database, nil
 }
 
 func execSQLiteRegenerate(database *sql.DB, where string, args ...any) (int64, error) {
@@ -685,24 +699,30 @@ func markSQLiteMessageByFuzzyText(database *sql.DB, req regenerateMessageRequest
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	var matched regenerateCandidate
 	for rows.Next() {
 		var candidate regenerateCandidate
 		if err := rows.Scan(&candidate.MsgID, &candidate.CommentID, &candidate.UserID, &candidate.UserName, &candidate.Question); err != nil {
+			rows.Close()
 			return 0, err
 		}
-		if !regenerateCandidateMatches(req, candidate) {
-			continue
-		}
-		if candidate.MsgID > 0 {
-			return execSQLiteRegenerate(database, "msg_id=?", candidate.MsgID)
-		}
-		if candidate.CommentID > 0 {
-			return execSQLiteRegenerate(database, "comment_a_id=?", candidate.CommentID)
+		if regenerateCandidateMatches(req, candidate) {
+			matched = candidate
+			break
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if matched.MsgID > 0 {
+		return execSQLiteRegenerate(database, "msg_id=?", matched.MsgID)
+	}
+	if matched.CommentID > 0 {
+		return execSQLiteRegenerate(database, "comment_a_id=?", matched.CommentID)
 	}
 	return 0, nil
 }

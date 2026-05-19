@@ -16,6 +16,12 @@ func Init() {
 	if err != nil {
 		loger.Loger.Fatal("[SQLite]无法读取文件", zap.Error(err))
 	}
+	Db.SetMaxOpenConns(1)
+	Db.SetMaxIdleConns(1)
+	_, err = Db.Exec("PRAGMA busy_timeout=8000")
+	if err != nil {
+		loger.Loger.Fatal("[SQLite]无法设置等待锁超时", zap.Error(err))
+	}
 	_, err = Db.Exec(`
 	CREATE TABLE IF NOT EXISTS at (
 	msg_id BIGINT PRIMARY KEY,
