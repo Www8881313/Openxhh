@@ -246,6 +246,201 @@ sudo systemctl restart Openxhh
 </details>
 
 <details>
+<summary>VPS IP 被小黑盒接口拦截时使用 Cloudflare Worker 中转</summary>
+
+如果你的 VPS 出站 IP 被小黑盒接口拒绝访问，可以把 `xhh.baseUrl` 指向 Cloudflare Worker，让 Openxhh 的小黑盒 API 请求从 Worker 转发出去。
+
+注意：这只能解决“VPS 出站 IP 被拒”的问题；如果是账号、Cookie、请求频率或行为特征触发风控，仍然需要重新登录、降低频率或检查配置。
+
+### 1. 在 VPS 上准备 Worker 目录
+
+```bash
+mkdir -p ~/openxhh-worker
+cd ~/openxhh-worker
+```
+
+如果 VPS 没有 Node.js，先安装：
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v
+npm -v
+```
+
+### 2. 创建 Worker 脚本
+
+```bash
+cat > xhh-cloudflare-worker.js <<'EOF'
+const DEFAULT_UPSTREAM = "https://api.xiaoheihe.cn";
+
+function normalizePrefix(prefix) {
+  const value = (prefix || "").trim();
+  if (!value || value === "/") {
+    return "";
+  }
+  return value.startsWith("/") ? value.replace(/\/+$/, "") : `/${value.replace(/\/+$/, "")}`;
+}
+
+function forwardedHeaders(request) {
+  const headers = new Headers(request.headers);
+  for (const name of [
+    "host",
+    "cf-connecting-ip",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-real-ip",
+  ]) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
+export default {
+  async fetch(request, env) {
+    if (!["GET", "POST", "HEAD"].includes(request.method)) {
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    const prefix = normalizePrefix(env.PROXY_PATH_PREFIX);
+    if (!prefix) {
+      return new Response("Missing PROXY_PATH_PREFIX", { status: 500 });
+    }
+
+    const url = new URL(request.url);
+    if (url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const upstreamBase = new URL(env.UPSTREAM_ORIGIN || DEFAULT_UPSTREAM);
+    const upstream = new URL(upstreamBase);
+    upstream.pathname = url.pathname.slice(prefix.length) || "/";
+    upstream.search = url.search;
+
+    const init = {
+      method: request.method,
+      headers: forwardedHeaders(request),
+      redirect: "manual",
+    };
+    if (!["GET", "HEAD"].includes(request.method)) {
+      init.body = request.body;
+    }
+
+    return fetch(upstream.toString(), init);
+  },
+};
+EOF
+
+node --check xhh-cloudflare-worker.js
+```
+
+### 3. 登录或配置 Cloudflare Token
+
+有浏览器环境时可以直接登录：
+
+```bash
+npx wrangler login
+```
+
+如果 VPS 不方便打开浏览器，在 Cloudflare 后台创建一个可编辑 Workers 的 API Token，然后在 VPS 上设置：
+
+```bash
+export CLOUDFLARE_API_TOKEN='你的 Cloudflare API Token'
+```
+
+不要把这个 token 写进公开文件。
+
+### 4. 部署 Worker
+
+```bash
+npx wrangler deploy xhh-cloudflare-worker.js --name openxhh-xhh-proxy --compatibility-date 2026-05-20
+```
+
+第一次部署如果提示注册 `workers.dev` 子域名，按提示输入一个英文子域名即可。部署成功后会看到类似：
+
+```text
+https://openxhh-xhh-proxy.你的子域名.workers.dev
+```
+
+### 5. 设置秘密路径
+
+生成一个随机路径：
+
+```bash
+node -e "console.log('/xhh-' + require('crypto').randomBytes(16).toString('hex'))"
+```
+
+把输出保存下来，例如：
+
+```text
+/xhh-a1b2c3d4e5f678901234567890abcdef
+```
+
+写入 Worker secret：
+
+```bash
+npx wrangler secret put PROXY_PATH_PREFIX --name openxhh-xhh-proxy
+```
+
+提示输入值时，粘贴刚生成的完整路径。
+
+### 6. 测试 Worker 转发
+
+把下面的地址替换成你的 Worker 地址和秘密路径：
+
+```bash
+curl -4 -I "https://openxhh-xhh-proxy.你的子域名.workers.dev/xhh-a1b2c3d4e5f678901234567890abcdef/account/get_qrcode_url/"
+```
+
+正常情况下不应该返回：
+
+- `404 Not found`：路径前缀不对。
+- `500 Missing PROXY_PATH_PREFIX`：Worker secret 没设置成功。
+- TLS handshake failure：新注册的 `workers.dev` 子域名证书可能还没生效，等几分钟再试。
+
+如果返回 `200`、`403` 或小黑盒 JSON，通常说明已经转发到小黑盒接口；`403` 还需要结合日志判断是否为账号、Cookie 或频率问题。
+
+### 7. 修改 Openxhh 配置
+
+打开 VPS Web UI：
+
+```text
+配置管理 → 小黑盒配置 → API Base URL
+```
+
+把默认值：
+
+```text
+https://api.xiaoheihe.cn
+```
+
+改成：
+
+```text
+https://openxhh-xhh-proxy.你的子域名.workers.dev/xhh-a1b2c3d4e5f678901234567890abcdef
+```
+
+也可以直接改 `/opt/Openxhh/config.json`：
+
+```json
+"baseUrl": "https://openxhh-xhh-proxy.你的子域名.workers.dev/xhh-a1b2c3d4e5f678901234567890abcdef"
+```
+
+保存后重启主服务：
+
+```bash
+sudo systemctl restart Openxhh
+sudo journalctl -u Openxhh -f
+```
+
+如果日志里不再出现小黑盒 HTTP `403`，说明 Worker 中转已经生效。若仍然失败，优先检查 `xhh.baseUrl` 是否保存成功、Worker secret 是否一致、Cookie 是否过期，以及 `checkTime` / `replyTime` 是否过低。
+
+</details>
+
+<details>
 <summary>systemd 后台运行</summary>
 
 创建机器人服务：
@@ -722,7 +917,7 @@ sudo journalctl -u Openxhh-webui -n 50 --no-pager
 | `xhh.maxPendingReplies` | `50` | 普通用户全局待回复队列上限 |
 | `xhh.maxPendingRepliesPerUser` | `5` | 单个普通用户待回复队列上限 |
 | `xhh.enableWhitelist` | `false` | 默认关闭白名单，回复所有 @ |
-| `xhh.baseUrl` | `https://api.xiaoheihe.cn` | 小黑盒 API 地址 |
+| `xhh.baseUrl` | `https://api.xiaoheihe.cn` | 小黑盒 API 地址；VPS 出站 IP 被拒时可改为 Cloudflare Worker 地址 |
 | `xhh.webver` | `2.5` | 小黑盒 Web 版本字段 |
 | `xhh.version` | `999.0.4` | 小黑盒版本字段 |
 | `database.type` | `sqlite` | 个人部署推荐 SQLite |
