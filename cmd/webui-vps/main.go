@@ -82,8 +82,10 @@ type tokenRecord struct {
 }
 
 type recordLinkLookup struct {
-	ByMsg     map[int64]int64 `json:"byMsg"`
-	ByComment map[int64]int64 `json:"byComment"`
+	ByMsg             map[int64]int64  `json:"byMsg"`
+	ByComment         map[int64]int64  `json:"byComment"`
+	QuestionByMsg     map[int64]string `json:"questionByMsg"`
+	QuestionByComment map[int64]string `json:"questionByComment"`
 }
 
 type regenerateCandidate struct {
@@ -985,7 +987,7 @@ func (s *serverState) readRecordLogs(recentOnly bool) (string, int, error) {
 }
 
 func (s *serverState) readRecordLinkLookup(logContent string) recordLinkLookup {
-	lookup := recordLinkLookup{ByMsg: map[int64]int64{}, ByComment: map[int64]int64{}}
+	lookup := recordLinkLookup{ByMsg: map[int64]int64{}, ByComment: map[int64]int64{}, QuestionByMsg: map[int64]string{}, QuestionByComment: map[int64]string{}}
 	msgIDs, commentIDs := recordLinkLookupIDs(logContent)
 	if len(msgIDs) == 0 && len(commentIDs) == 0 {
 		return lookup
@@ -1024,7 +1026,7 @@ func recordLinkLookupIDs(content string) ([]int64, []int64) {
 	commentSet := map[int64]struct{}{}
 	for _, line := range strings.Split(content, "\n") {
 		payload := logJSONPayload(line)
-		if payload == nil || logIntField(payload, "link_id", "linkId") > 0 {
+		if payload == nil {
 			continue
 		}
 		if msgID := logIntField(payload, "msg_id", "msgId", "message_id"); msgID > 0 && len(msgSet) < maxRecordLinkLookupIDs {
@@ -1101,17 +1103,17 @@ func (s *serverState) fillSQLiteRecordLinkLookup(msgIDs, commentIDs []int64, loo
 		return err
 	}
 	defer database.Close()
-	if err := fillSQLiteRecordLinkMap(database, "msg_id", msgIDs, lookup.ByMsg); err != nil {
+	if err := fillSQLiteRecordLinkMap(database, "msg_id", msgIDs, lookup.ByMsg, lookup.QuestionByMsg); err != nil {
 		return err
 	}
-	return fillSQLiteRecordLinkMap(database, "comment_a_id", commentIDs, lookup.ByComment)
+	return fillSQLiteRecordLinkMap(database, "comment_a_id", commentIDs, lookup.ByComment, lookup.QuestionByComment)
 }
 
-func fillSQLiteRecordLinkMap(database *sql.DB, column string, ids []int64, target map[int64]int64) error {
+func fillSQLiteRecordLinkMap(database *sql.DB, column string, ids []int64, links map[int64]int64, questions map[int64]string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	query := fmt.Sprintf("SELECT %s, link_id FROM at WHERE link_id IS NOT NULL AND link_id>0 AND %s IN (%s)", column, column, sqlitePlaceholders(len(ids)))
+	query := fmt.Sprintf("SELECT %s, link_id, COALESCE(comment_text, '') FROM at WHERE %s IN (%s)", column, column, sqlitePlaceholders(len(ids)))
 	args := int64Args(ids)
 	rows, err := database.Query(query, args...)
 	if err != nil {
@@ -1121,11 +1123,15 @@ func fillSQLiteRecordLinkMap(database *sql.DB, column string, ids []int64, targe
 	for rows.Next() {
 		var id int64
 		var linkID int64
-		if err := rows.Scan(&id, &linkID); err != nil {
+		var question string
+		if err := rows.Scan(&id, &linkID, &question); err != nil {
 			return err
 		}
 		if id > 0 && linkID > 0 {
-			target[id] = linkID
+			links[id] = linkID
+		}
+		if id > 0 && strings.TrimSpace(question) != "" {
+			questions[id] = question
 		}
 	}
 	return rows.Err()
@@ -1139,17 +1145,17 @@ func fillPostgresRecordLinkLookup(cfg appConfig, msgIDs, commentIDs []int64, loo
 		return err
 	}
 	defer pool.Close()
-	if err := fillPostgresRecordLinkMap(ctx, pool, "msg_id", msgIDs, lookup.ByMsg); err != nil {
+	if err := fillPostgresRecordLinkMap(ctx, pool, "msg_id", msgIDs, lookup.ByMsg, lookup.QuestionByMsg); err != nil {
 		return err
 	}
-	return fillPostgresRecordLinkMap(ctx, pool, "comment_a_id", commentIDs, lookup.ByComment)
+	return fillPostgresRecordLinkMap(ctx, pool, "comment_a_id", commentIDs, lookup.ByComment, lookup.QuestionByComment)
 }
 
-func fillPostgresRecordLinkMap(ctx context.Context, pool *pgxpool.Pool, column string, ids []int64, target map[int64]int64) error {
+func fillPostgresRecordLinkMap(ctx context.Context, pool *pgxpool.Pool, column string, ids []int64, links map[int64]int64, questions map[int64]string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	query := fmt.Sprintf("SELECT %s, link_id FROM at WHERE link_id IS NOT NULL AND link_id>0 AND %s IN (%s)", column, column, postgresPlaceholders(len(ids)))
+	query := fmt.Sprintf("SELECT %s, link_id, COALESCE(comment_text, '') FROM at WHERE %s IN (%s)", column, column, postgresPlaceholders(len(ids)))
 	args := int64Args(ids)
 	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
@@ -1159,11 +1165,15 @@ func fillPostgresRecordLinkMap(ctx context.Context, pool *pgxpool.Pool, column s
 	for rows.Next() {
 		var id int64
 		var linkID int64
-		if err := rows.Scan(&id, &linkID); err != nil {
+		var question string
+		if err := rows.Scan(&id, &linkID, &question); err != nil {
 			return err
 		}
 		if id > 0 && linkID > 0 {
-			target[id] = linkID
+			links[id] = linkID
+		}
+		if id > 0 && strings.TrimSpace(question) != "" {
+			questions[id] = question
 		}
 	}
 	return rows.Err()
@@ -1696,7 +1706,7 @@ async function loadAllRecords(manual=false){
 function renderRecords(items){if(!recordsBody)return;const signature=JSON.stringify(items.map(item=>recordKey(item)+'|'+(item.reply||'')+'|'+(item.status||'')+'|'+(item.tokens||0)+'|'+(item.linkId||0)));if(signature===recordsSignature)return;rememberRecordScrolls();recordsSignature=signature;recordsBody.innerHTML='';if(!items.length){const row=document.createElement('tr');const cell=document.createElement('td');cell.colSpan=7;cell.textContent='暂无最近24小时可识别的用户提问/机器人回复记录';row.appendChild(cell);recordsBody.appendChild(row);return}items.forEach((item,index)=>{const key=recordKey(item,index);const row=document.createElement('tr');appendCell(row,item.time);appendCell(row,item.user||'未知用户');appendCell(row,item.question,'content-cell',key+':question');appendCell(row,item.reply||'—','content-cell',key+':reply');const statusCell=document.createElement('td');const badge=document.createElement('span');badge.className='badge '+(item.status==='已回复'?'ok':isErrorStatus(item.status)?'error':'warn');badge.textContent=item.status;statusCell.appendChild(badge);const copyBtn=document.createElement('button');copyBtn.type='button';copyBtn.className='copy-btn';copyBtn.textContent='复制';copyBtn.addEventListener('click',async()=>{await copyText(recordText(item));copyBtn.textContent='已复制';setTimeout(()=>copyBtn.textContent='复制',900)});statusCell.appendChild(copyBtn);row.appendChild(statusCell);appendPostCell(row,item);const actionCell=document.createElement('td');const stack=document.createElement('div');stack.className='action-stack';const regenerateBtn=document.createElement('button');regenerateBtn.type='button';regenerateBtn.className='copy-btn';regenerateBtn.textContent='重新生成';const feedback=document.createElement('span');feedback.className='action-feedback';regenerateBtn.addEventListener('click',()=>regenerateMessage(item,regenerateBtn,feedback));stack.appendChild(regenerateBtn);stack.appendChild(feedback);actionCell.appendChild(stack);row.appendChild(actionCell);recordsBody.appendChild(row)})}
 function rememberRecordScrolls(){recordsBody?.querySelectorAll('.clip-cell[data-scroll-key]').forEach(cell=>recordScrollMemory.set(cell.dataset.scrollKey,cell.scrollTop))}
 function recordKey(item,index=0){if(item.msgId||item.commentId)return [item.msgId||'',item.commentId||''].join('|');const fallback=[item.linkId||'',item.time||'',normalizeText(item.user||''),normalizeText(item.question||''),normalizeText(item.reply||'')].join('|');return fallback||String(index)}
-function applyRecordLinks(items,links){if(!links)return;const byMsg=links.byMsg||{};const byComment=links.byComment||{};for(const item of items){if(item.linkId)continue;const linkId=(item.msgId&&byMsg[String(item.msgId)])||(item.commentId&&byComment[String(item.commentId)]);if(linkId)item.linkId=Number(linkId)||0}}
+function applyRecordLinks(items,links){if(!links)return;const byMsg=links.byMsg||{};const byComment=links.byComment||{};const questionByMsg=links.questionByMsg||{};const questionByComment=links.questionByComment||{};for(const item of items){if(!item.linkId){const linkId=(item.msgId&&byMsg[String(item.msgId)])||(item.commentId&&byComment[String(item.commentId)]);if(linkId)item.linkId=Number(linkId)||0}const question=(item.msgId&&questionByMsg[String(item.msgId)])||(item.commentId&&questionByComment[String(item.commentId)]);if(question&&normalizeText(question).length>normalizeText(item.question||'').length)item.question=question}}
 function renderLogLines(content){const selectedLines=selectedLogLineIndexes();logOutput.innerHTML='';logOutput.dataset.raw=content||'';logOutput.classList.toggle('empty',!content);if(!content){logOutput.textContent='暂无日志。';lastSelectedLogLine=-1;return}content.split('\n').forEach((line,index)=>{const item=document.createElement('span');item.className='log-line';item.dataset.index=String(index);item.textContent=line||' ';item.title='点击选择这一行，Shift 点击选择范围，再点复制选中';item.classList.toggle('selected',selectedLines.has(index));item.addEventListener('click',event=>toggleLogLineSelection(index,event.shiftKey));logOutput.appendChild(item)})}
 function rerenderCurrentLog(){clearLogLineSelection();window.getSelection()?.removeAllRanges();renderLog(rawLogContent)}
 function filterLogContent(content){if(!content)return'';const mode=logFilter?.value||'all';const keyword=(logKeyword?.value||'').trim().toLowerCase();return content.split('\n').filter(line=>matchesLogFilter(line,mode)&&(!keyword||line.toLowerCase().includes(keyword))).join('\n')}
@@ -1716,11 +1726,12 @@ function sameInteraction(a,b){if(a?.msgId&&b?.msgId&&a.msgId!==b.msgId)return fa
 function finalizePending(item){if(item.status==='待重试'||item.lastError){item.reply=item.lastError||item.reply||'AI 回复失败';item.status='失败'}return item}
 function isErrorStatus(status){return status==='失败'||status==='异常发送'}
 function attachMessageContext(item,context){if(!context)return item;if(context.msgId)item.msgId=context.msgId;if(context.commentId)item.commentId=context.commentId;if(context.linkId)item.linkId=context.linkId;if(context.userId)item.userId=context.userId;if((!item.user||item.user==='未知用户')&&context.user)item.user=context.user;if(context.question)item.question=context.question;if((!item.time||item.time==='—')&&context.time)item.time=context.time;return item}
-function parseProcessingLine(line){const obj=parseZapJSON(line);if(!obj)return null;return{msgId:numberField(obj,'msg_id','msgId','message_id'),commentId:numberField(obj,'comment_id','commentId','reply_id'),linkId:numberField(obj,'link_id','linkId'),userId:numberField(obj,'user_id','userId','userid'),user:cleanText(obj.user_name||obj.user||''),question:cleanText(obj.text||obj.question||''),time:extractTime(line)}}
+function parseProcessingLine(line){const obj=parseZapJSON(line);if(!obj)return null;return{msgId:numberField(obj,'msg_id','msgId','message_id'),commentId:numberField(obj,'comment_id','commentId','reply_id'),linkId:numberField(obj,'link_id','linkId'),userId:numberField(obj,'user_id','userId','userid'),user:cleanText(obj.user_name||obj.user||''),question:fullQuestionText(obj),time:extractTime(line)}}
 function parseAnomalyLine(line){const obj=parseZapJSON(line);if(!obj)return null;return{commentId:numberField(obj,'reply_id','comment_id','commentId'),linkId:numberField(obj,'link_id','linkId'),time:extractTime(line)}}
-function parseStandaloneFailureLine(line){const obj=parseZapJSON(line)||{};return{commentId:numberField(obj,'reply_id','comment_id','commentId'),linkId:numberField(obj,'link_id','linkId'),user:cleanText(obj.user_name||obj.user||''),question:cleanText(obj.text||obj.question||''),reply:failureText(line),status:'失败',time:extractTime(line)}}
+function parseStandaloneFailureLine(line){const obj=parseZapJSON(line)||{};return{commentId:numberField(obj,'reply_id','comment_id','commentId'),linkId:numberField(obj,'link_id','linkId'),user:cleanText(obj.user_name||obj.user||''),question:fullQuestionText(obj),reply:failureText(line),status:'失败',time:extractTime(line)}}
 function parseQuestionLine(line){const content=extractContentArray(line);const userQuestion=extractUserQuestion(content);return{time:extractTime(line),user:userQuestion.user,question:userQuestion.question,reply:'',status:'待回复'}}
-function extractUserQuestion(content){const candidates=[];for(const item of content){const text=item&&item.text;if(!text||!/评论.*上下文/.test(text))continue;for(const line of text.split('\n')){const parsed=parseContextLine(line);if(parsed)candidates.push(parsed)}}if(!candidates.length)return{user:'未知用户',question:''};const mentioned=[...candidates].reverse().find(item=>item.text.includes('@'));const picked=mentioned||candidates[candidates.length-1];return{user:picked.user||'未知用户',question:picked.text||''}}
+function fullQuestionText(obj){return cleanText(obj?.raw_text||obj?.rawQuestion||obj?.raw_question||obj?.user_say||obj?.userSay||obj?.comment_text||obj?.text||obj?.question||'')}
+function extractUserQuestion(content){const candidates=[];for(const item of content){const text=item&&item.text;if(!text||!/评论.*上下文/.test(text))continue;let current=null;for(const line of text.split('\n')){const parsed=parseContextLine(line);if(parsed){if(current)candidates.push(current);current={user:parsed.user,text:parsed.text};continue}if(current&&line.trim())current.text+='\n'+cleanText(line)}if(current)candidates.push(current)}if(!candidates.length)return{user:'未知用户',question:''};const mentioned=[...candidates].reverse().find(item=>item.text.includes('@'));const picked=mentioned||candidates[candidates.length-1];return{user:picked.user||'未知用户',question:picked.text||''}}
 function extractContentArray(line){const obj=parseZapJSON(line);if(obj&&Array.isArray(obj.Content))return obj.Content;return[]}
 function numberField(obj,...fields){for(const field of fields){const value=Number(obj?.[field]??0);if(Number.isFinite(value)&&value>0)return value}return 0}
 function parseZapJSON(line){const start=line.indexOf('{');if(start<0)return null;try{return JSON.parse(line.slice(start))}catch(err){return null}}
