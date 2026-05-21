@@ -12,7 +12,10 @@ import (
 )
 
 const messageStreamTrackInterval = 120 * time.Second
-const defaultMessageStreamTrackBatchSize = 120
+const messageStreamTrackStartupDelay = 90 * time.Second
+const messageStreamTrackItemDelay = 800 * time.Millisecond
+const defaultMessageStreamTrackBatchSize = 10
+const maxMessageStreamTrackBatchSize = 20
 const messageStreamSubCommentPageBudget = 40
 const messageStreamVerboseMissWindow = 10 * time.Minute
 
@@ -22,6 +25,7 @@ var messageStreamTrackCursor struct {
 }
 
 func TrackInboundReplies() {
+	time.Sleep(messageStreamTrackStartupDelay)
 	for {
 		processOutboundReplyTrackingOnce()
 		time.Sleep(messageStreamTrackInterval)
@@ -36,7 +40,13 @@ func processOutboundReplyTrackingOnce() {
 		return
 	}
 	var located, unresolved, saved int
-	for _, outbound := range outbounds {
+	for index, outbound := range outbounds {
+		if xhhCaptchaCooldownRemaining() > 0 {
+			break
+		}
+		if index > 0 {
+			time.Sleep(messageStreamTrackItemDelay)
+		}
 		result := trackOutboundReplies(outbound)
 		if result.Located {
 			located++
@@ -75,10 +85,14 @@ func messageStreamTrackSince() int64 {
 }
 
 func messageStreamTrackBatchSize() int {
-	if config.ConfigStruct.Xhh.MessageStreamTrackBatchSize > 0 {
-		return config.ConfigStruct.Xhh.MessageStreamTrackBatchSize
+	size := config.ConfigStruct.Xhh.MessageStreamTrackBatchSize
+	if size <= 0 {
+		return defaultMessageStreamTrackBatchSize
 	}
-	return defaultMessageStreamTrackBatchSize
+	if size > maxMessageStreamTrackBatchSize {
+		return maxMessageStreamTrackBatchSize
+	}
+	return size
 }
 
 type messageStreamTrackResult struct {

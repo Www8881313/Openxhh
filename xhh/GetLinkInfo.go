@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -87,7 +89,56 @@ var explicitMentionTargetPatterns = []*regexp.Regexp{
 var xhhEmojiPattern = regexp.MustCompile(`\[[^\[\]\s]{1,32}\]`)
 var mentionAnchorPattern = regexp.MustCompile(`data-user-id="(\d+)"[^>]*>\s*@?([^<]+)</a>`)
 
-const maxXHHResponseLogBytes = 300
+const (
+	maxXHHResponseLogBytes      = 300
+	xhhCaptchaCooldown          = 10 * time.Minute
+	xhhCaptchaCooldownLogPeriod = 60 * time.Second
+)
+
+var xhhCaptchaCooldownUntil atomic.Int64
+var xhhCaptchaCooldownLastLog atomic.Int64
+
+func xhhCaptchaCooldownRemaining() time.Duration {
+	until := xhhCaptchaCooldownUntil.Load()
+	if until <= 0 {
+		return 0
+	}
+	remaining := time.Until(time.Unix(until, 0))
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
+func xhhCaptchaCoolingDown(endpoint string, fields ...zap.Field) bool {
+	remaining := xhhCaptchaCooldownRemaining()
+	if remaining <= 0 {
+		return false
+	}
+	now := time.Now().Unix()
+	last := xhhCaptchaCooldownLastLog.Load()
+	if now-last >= int64(xhhCaptchaCooldownLogPeriod/time.Second) && xhhCaptchaCooldownLastLog.CompareAndSwap(last, now) {
+		fields = append(fields, zap.String("endpoint", endpoint), zap.Duration("remaining", remaining))
+		loger.Loger.Warn("[XHH]验证码冷却中，跳过请求", fields...)
+	}
+	return true
+}
+
+func enterXHHCaptchaCooldown(endpoint string, fields ...zap.Field) {
+	until := time.Now().Add(xhhCaptchaCooldown).Unix()
+	for {
+		current := xhhCaptchaCooldownUntil.Load()
+		if current >= until || xhhCaptchaCooldownUntil.CompareAndSwap(current, until) {
+			break
+		}
+	}
+	fields = append(fields, zap.String("endpoint", endpoint), zap.Duration("cooldown", xhhCaptchaCooldown))
+	loger.Loger.Warn("[XHH]小黑盒要求验证码，暂停帖子详情请求", fields...)
+}
+
+func isXHHCaptchaStatus(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "show_captcha")
+}
 
 func buildMention(uid int, username string) string {
 	id := strconv.Itoa(uid)
@@ -169,6 +220,9 @@ func GetLinkInfo(LinkID int, RootCommentID int, CommentID int, CurrentUserID int
 
 func fetchLinkInfoPage(linkID int, page int) (LinkInfoS, bool) {
 	var data LinkInfoS
+	if xhhCaptchaCoolingDown("link_tree", zap.Int("link_id", linkID), zap.Int("page", page)) {
+		return data, false
+	}
 	isFirst := "0"
 	if page == 1 {
 		isFirst = "1"
@@ -198,6 +252,10 @@ func fetchLinkInfoPage(linkID int, page int) (LinkInfoS, bool) {
 		return data, false
 	}
 	if data.Stat != "ok" {
+		if isXHHCaptchaStatus(data.Stat) {
+			enterXHHCaptchaCooldown("link_tree", zap.Int("link_id", linkID), zap.Int("page", page), zap.String("body", limitXHHResponseBody(string(Dbyte))))
+			return data, false
+		}
 		if data.Stat == "failed" {
 			loger.Loger.Warn("[XHH]原帖无法被查看", zap.String("msg", data.Msg))
 			return data, false
@@ -233,6 +291,9 @@ func fetchMoreSubComments(rootCommentID int, targetCommentID int, comments []Com
 
 	lastVal := comments[len(comments)-1].CommentID
 	for i := 0; i < 20; i++ {
+		if xhhCaptchaCoolingDown("sub_comments", zap.Int("root_comment_id", rootCommentID), zap.Int("target_comment_id", targetCommentID)) {
+			return comments
+		}
 		other := "?root_comment_id=" + strconv.Itoa(rootCommentID) + "&lastval=" + strconv.Itoa(lastVal)
 		resp := SendReq("GET", "/bbs/app/comment/sub/comments", nil, other)
 		if resp == nil {
@@ -254,6 +315,10 @@ func fetchMoreSubComments(rootCommentID int, targetCommentID int, comments []Com
 		err = json.Unmarshal(Dbyte, &data)
 		if err != nil {
 			loger.Loger.Error("[XHH]子评论反序列化失败", zap.Error(err), zap.Any("data", string(Dbyte)))
+			return comments
+		}
+		if isXHHCaptchaStatus(data.Stat) {
+			enterXHHCaptchaCooldown("sub_comments", zap.Int("root_comment_id", rootCommentID), zap.String("body", limitXHHResponseBody(string(Dbyte))))
 			return comments
 		}
 		if data.Stat != "ok" || len(data.Result.Comments) == 0 {
@@ -603,6 +668,9 @@ func expandMentionSearchComments(group commentGroup, subCommentPageBudget *int) 
 func fetchAllSubComments(rootCommentID int, comments []CommentInfo, subCommentPageBudget *int) []CommentInfo {
 	lastVal := comments[len(comments)-1].CommentID
 	for *subCommentPageBudget > 0 {
+		if xhhCaptchaCoolingDown("sub_comments", zap.Int("root_comment_id", rootCommentID)) {
+			return comments
+		}
 		*subCommentPageBudget--
 		other := "?root_comment_id=" + strconv.Itoa(rootCommentID) + "&lastval=" + strconv.Itoa(lastVal)
 		resp := SendReq("GET", "/bbs/app/comment/sub/comments", nil, other)
@@ -625,6 +693,10 @@ func fetchAllSubComments(rootCommentID int, comments []CommentInfo, subCommentPa
 		err = json.Unmarshal(Dbyte, &data)
 		if err != nil {
 			loger.Loger.Error("[XHH]子评论反序列化失败", zap.Error(err), zap.Any("data", string(Dbyte)))
+			return comments
+		}
+		if isXHHCaptchaStatus(data.Stat) {
+			enterXHHCaptchaCooldown("sub_comments", zap.Int("root_comment_id", rootCommentID), zap.String("body", limitXHHResponseBody(string(Dbyte))))
 			return comments
 		}
 		if data.Stat != "ok" || len(data.Result.Comments) == 0 {
