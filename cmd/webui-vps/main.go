@@ -2138,7 +2138,8 @@ func (s *serverState) handleMessageStream(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	outbound = s.enrichOutboundMessageStream(r.Context(), cfg, outbound)
+	outbound = s.enrichMessageStreamRecords(r.Context(), cfg, outbound)
+	inbound = s.enrichMessageStreamRecords(r.Context(), cfg, inbound)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "outbound": outbound, "inbound": inbound})
 }
 
@@ -2254,7 +2255,7 @@ func (s *serverState) readMessageStreamRecords(cfg appConfig, recentOnly bool) (
 	}
 }
 
-func (s *serverState) enrichOutboundMessageStream(ctx context.Context, cfg appConfig, records []messageStreamRecord) []messageStreamRecord {
+func (s *serverState) enrichMessageStreamRecords(ctx context.Context, cfg appConfig, records []messageStreamRecord) []messageStreamRecord {
 	if len(records) == 0 {
 		return records
 	}
