@@ -74,8 +74,9 @@ func TestBuildReqBodyResponsesWebSearch(t *testing.T) {
 	}
 
 	var got struct {
-		Model string `json:"model"`
-		Input []struct {
+		Model        string `json:"model"`
+		Instructions string `json:"instructions"`
+		Input        []struct {
 			Role    string `json:"role"`
 			Content []struct {
 				Type     string `json:"type"`
@@ -95,16 +96,19 @@ func TestBuildReqBodyResponsesWebSearch(t *testing.T) {
 	if got.Model != "test-model" {
 		t.Fatalf("model = %q", got.Model)
 	}
-	if len(got.Input) != 2 || got.Input[0].Role != "developer" || got.Input[1].Role != "user" {
+	if got.Instructions != "system prompt" {
+		t.Fatalf("instructions = %q", got.Instructions)
+	}
+	if len(got.Input) != 1 || got.Input[0].Role != "user" {
 		t.Fatalf("input roles = %+v", got.Input)
 	}
-	if len(got.Input[1].Content) != 2 || got.Input[1].Content[0].Type != "input_text" || got.Input[1].Content[1].Type != "input_image" {
-		t.Fatalf("input content = %+v", got.Input[1].Content)
+	if len(got.Input[0].Content) != 2 || got.Input[0].Content[0].Type != "input_text" || got.Input[0].Content[1].Type != "input_image" {
+		t.Fatalf("input content = %+v", got.Input[0].Content)
 	}
-	if got.Input[1].Content[1].ImageURL != "https://example.com/image.png" {
-		t.Fatalf("image_url = %q", got.Input[1].Content[1].ImageURL)
+	if got.Input[0].Content[1].ImageURL != "https://example.com/image.png" {
+		t.Fatalf("image_url = %q", got.Input[0].Content[1].ImageURL)
 	}
-	if len(got.Tools) != 1 || got.Tools[0].Type != "web_search" || got.Tools[0].SearchContextSize != "high" {
+	if len(got.Tools) != 1 || got.Tools[0].Type != responsesWebSearchToolType || got.Tools[0].SearchContextSize != "high" {
 		t.Fatalf("tools = %+v", got.Tools)
 	}
 	if got.ToolChoice != "required" {
@@ -137,8 +141,9 @@ func TestSendChatCompletionUsesResponsesInput(t *testing.T) {
 	restoreAIConfig(t)
 
 	type requestBody struct {
-		Model string `json:"model"`
-		Input []struct {
+		Model        string `json:"model"`
+		Instructions string `json:"instructions"`
+		Input        []struct {
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
@@ -186,14 +191,14 @@ func TestSendChatCompletionUsesResponsesInput(t *testing.T) {
 	if result.body.Model != "route-model" {
 		t.Fatalf("model = %q", result.body.Model)
 	}
-	if len(result.body.Input) != 2 || result.body.Input[0].Role != "developer" || result.body.Input[1].Role != "user" {
+	if result.body.Instructions != "system prompt" {
+		t.Fatalf("instructions = %q", result.body.Instructions)
+	}
+	if len(result.body.Input) != 1 || result.body.Input[0].Role != "user" {
 		t.Fatalf("input roles = %+v", result.body.Input)
 	}
-	if len(result.body.Input[0].Content) != 1 || result.body.Input[0].Content[0].Type != "input_text" || result.body.Input[0].Content[0].Text != "system prompt" {
-		t.Fatalf("developer content = %+v", result.body.Input[0].Content)
-	}
-	if len(result.body.Input[1].Content) != 1 || result.body.Input[1].Content[0].Type != "input_text" || result.body.Input[1].Content[0].Text != "hello" {
-		t.Fatalf("user content = %+v", result.body.Input[1].Content)
+	if len(result.body.Input[0].Content) != 1 || result.body.Input[0].Content[0].Type != "input_text" || result.body.Input[0].Content[0].Text != "hello" {
+		t.Fatalf("user content = %+v", result.body.Input[0].Content)
 	}
 }
 

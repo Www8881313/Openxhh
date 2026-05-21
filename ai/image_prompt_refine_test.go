@@ -48,8 +48,9 @@ func TestRefineImagePromptUsesResponsesInput(t *testing.T) {
 	loger.Loger = zap.NewNop()
 
 	type requestBody struct {
-		Model string `json:"model"`
-		Input []struct {
+		Model        string `json:"model"`
+		Instructions string `json:"instructions"`
+		Input        []struct {
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
@@ -102,11 +103,14 @@ func TestRefineImagePromptUsesResponsesInput(t *testing.T) {
 	if result.body.Model != "prompt-model" {
 		t.Fatalf("model = %q", result.body.Model)
 	}
-	if len(result.body.Input) != 2 || result.body.Input[0].Role != "developer" || result.body.Input[1].Role != "user" {
+	if result.body.Instructions == "" {
+		t.Fatal("instructions should not be empty")
+	}
+	if len(result.body.Input) != 1 || result.body.Input[0].Role != "user" {
 		t.Fatalf("input roles = %+v", result.body.Input)
 	}
-	if len(result.body.Input[1].Content) != 1 || result.body.Input[1].Content[0].Type != "input_text" || !strings.Contains(result.body.Input[1].Content[0].Text, "根据这张图生成海报") {
-		t.Fatalf("user content = %+v", result.body.Input[1].Content)
+	if len(result.body.Input[0].Content) != 1 || result.body.Input[0].Content[0].Type != "input_text" || !strings.Contains(result.body.Input[0].Content[0].Text, "根据这张图生成海报") {
+		t.Fatalf("user content = %+v", result.body.Input[0].Content)
 	}
 }
 

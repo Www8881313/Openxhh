@@ -54,14 +54,15 @@ func buildChatCompletionPayload(model string, messages []chatCompletionMessage, 
 		for _, message := range messages {
 			rawMessages = append(rawMessages, message)
 		}
-		input, err := toResponsesInput(rawMessages)
+		instructions, input, err := toResponsesPayloadParts(rawMessages)
 		if err != nil {
 			return nil, err
 		}
 		body := responsesBodyStruct{
-			Model:  model,
-			Input:  input,
-			Stream: false,
+			Model:        model,
+			Instructions: instructions,
+			Input:        input,
+			Stream:       false,
 		}
 		return json.Marshal(body)
 	}

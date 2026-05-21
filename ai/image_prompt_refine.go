@@ -97,14 +97,15 @@ func buildImagePromptRefinePayload(req ImagePromptRefineRequest, useResponses bo
 		for _, message := range messages {
 			rawMessages = append(rawMessages, message)
 		}
-		input, err := toResponsesInput(rawMessages)
+		instructions, input, err := toResponsesPayloadParts(rawMessages)
 		if err != nil {
 			return nil, err
 		}
 		body := responsesBodyStruct{
-			Model:  promptRefineModel(),
-			Input:  input,
-			Stream: false,
+			Model:        promptRefineModel(),
+			Instructions: instructions,
+			Input:        input,
+			Stream:       false,
 		}
 		return json.Marshal(body)
 	}

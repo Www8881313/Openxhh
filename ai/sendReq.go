@@ -39,11 +39,12 @@ type webSearchOptions struct {
 }
 
 type responsesBodyStruct struct {
-	Model      string              `json:"model"`
-	Input      []responsesInputMsg `json:"input"`
-	Tools      []responsesWebTool  `json:"tools,omitempty"`
-	ToolChoice string              `json:"tool_choice,omitempty"`
-	Stream     bool                `json:"stream"`
+	Model        string             `json:"model"`
+	Instructions string             `json:"instructions,omitempty"`
+	Input        any                `json:"input"`
+	Tools        []responsesWebTool `json:"tools,omitempty"`
+	ToolChoice   string             `json:"tool_choice,omitempty"`
+	Stream       bool               `json:"stream"`
 }
 
 type responsesInputMsg struct {
@@ -56,6 +57,8 @@ type responsesInputContent struct {
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
 }
+
+const responsesWebSearchToolType = "web_search_preview"
 
 type responsesWebTool struct {
 	Type              string `json:"type"`
@@ -152,17 +155,18 @@ func SendReq(Model string, Msg []any) (Jresp respStruct) {
 func buildReqBody(Model string, Msg []any) ([]byte, error) {
 	cfg := config.ConfigStruct.Ai
 	if useResponsesAPI(cfg.BaseUrl) {
-		input, err := toResponsesInput(Msg)
+		instructions, input, err := toResponsesPayloadParts(Msg)
 		if err != nil {
 			return nil, err
 		}
 		body := responsesBodyStruct{
-			Model:  Model,
-			Input:  input,
-			Stream: false,
+			Model:        Model,
+			Instructions: instructions,
+			Input:        input,
+			Stream:       false,
 		}
 		if aiWebSearchEnabled() {
-			body.Tools = []responsesWebTool{{Type: "web_search", SearchContextSize: aiSearchContextSize()}}
+			body.Tools = []responsesWebTool{{Type: responsesWebSearchToolType, SearchContextSize: aiSearchContextSize()}}
 			if aiForceWebSearchEnabled() {
 				body.ToolChoice = "required"
 			}
@@ -205,31 +209,67 @@ func aiSearchContextSize() string {
 	}
 }
 
-func toResponsesInput(Msg []any) ([]responsesInputMsg, error) {
+func toResponsesPayloadParts(Msg []any) (string, []responsesInputMsg, error) {
+	instructions := make([]string, 0, 1)
 	input := make([]responsesInputMsg, 0, len(Msg))
 	for _, msg := range Msg {
 		data, err := json.Marshal(msg)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		var raw rawMsg
 		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		role := raw.Role
-		if role == "system" {
-			role = "developer"
+		role := strings.ToLower(strings.TrimSpace(raw.Role))
+		if role == "system" || role == "developer" {
+			instruction, err := responsesInstructionText(raw.Content)
+			if err != nil {
+				return "", nil, err
+			}
+			if instruction != "" {
+				instructions = append(instructions, instruction)
+			}
+			continue
+		}
+		if role == "" {
+			role = "user"
 		}
 		content, err := toResponsesContent(raw.Content)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		input = append(input, responsesInputMsg{
 			Role:    role,
 			Content: content,
 		})
 	}
-	return input, nil
+	return strings.Join(instructions, "\n\n"), input, nil
+}
+
+func toResponsesInput(Msg []any) ([]responsesInputMsg, error) {
+	_, input, err := toResponsesPayloadParts(Msg)
+	return input, err
+}
+
+func responsesInstructionText(raw json.RawMessage) (string, error) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text), nil
+	}
+
+	var contents []Content
+	if err := json.Unmarshal(raw, &contents); err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, len(contents))
+	for _, content := range contents {
+		text := strings.TrimSpace(content.Text)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func toResponsesContent(raw json.RawMessage) (any, error) {
