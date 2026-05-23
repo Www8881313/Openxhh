@@ -261,6 +261,9 @@ func GetLinkInfo(LinkID int, RootCommentID int, CommentID int, CurrentUserID int
 			continue
 		}
 		if v.Type != "text" {
+			if v.Url == "" {
+				continue
+			}
 			content.Type = "image_url"
 			content.ImgUrl.Url = v.Url
 			Contents = append(Contents, content)
