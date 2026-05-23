@@ -279,8 +279,30 @@ func CheckAt() {
 	}
 
 	DontReply = false
+
+	// 调试：测试 list_type 接口
+	debugListTypeNotifications()
+
 	time.Sleep(time.Duration(CheckTime) * time.Second)
 	CheckAt()
+}
+
+func debugListTypeNotifications() {
+	for _, lt := range []int{0, 1, 2, 3, 4, 5} {
+		other := fmt.Sprintf("?list_type=%d&offset=0&limit=2&no_more=false", lt)
+		resp := SendReq("GET", "/bbs/app/user/message", nil, other)
+		if resp == nil {
+			loger.Loger.Info("[调试]list_type 请求失败", zap.Int("list_type", lt))
+			continue
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			loger.Loger.Info("[调试]list_type 读取失败", zap.Int("list_type", lt), zap.Error(err))
+			continue
+		}
+		loger.Loger.Info("[调试]list_type 响应", zap.Int("list_type", lt), zap.String("body", string(data[:min(len(data), 500)])))
+	}
 }
 
 func saveInboundMessageFromApp(v Msg) {
