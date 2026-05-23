@@ -998,6 +998,16 @@ func (s *serverState) handleEmojis(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *serverState) refreshCommentThreadCache(cfg appConfig, session xhhSession, record commentThreadRecord, replyText string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if record.CommentID > 0 || record.RootCommentID > 0 {
+		fetchXHHCommentThread(ctx, cfg, session, record)
+	} else if record.LinkID > 0 {
+		fetchXHHPostComments(ctx, cfg, session, record.LinkID, replyText)
+	}
+}
+
 func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1045,10 +1055,13 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 	session := s.loadXHHSession()
 	var thread []commentThreadItem
 	if record.CommentID > 0 || record.RootCommentID > 0 {
-		cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+		cachedThread, cachedTitle, cacheAge, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
 		if ok && len(cachedThread) > 0 {
 			thread = cachedThread
 			postTitle = firstNonEmpty(postTitle, cachedTitle)
+			if cacheAge > 300 {
+				go s.refreshCommentThreadCache(cfg, session, record, payload.ReplyText)
+			}
 		} else {
 			thread, err = fetchXHHCommentThread(r.Context(), cfg, session, record)
 			if err != nil || len(thread) == 0 {
@@ -1060,10 +1073,13 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 		}
 	} else {
 		mode = "post"
-		cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+		cachedThread, cachedTitle, cacheAge, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
 		if ok && len(cachedThread) > 0 {
 			thread = cachedThread
 			postTitle = firstNonEmpty(postTitle, cachedTitle)
+			if cacheAge > 300 {
+				go s.refreshCommentThreadCache(cfg, session, record, payload.ReplyText)
+			}
 		} else {
 			thread, postTitle, err = fetchXHHPostComments(r.Context(), cfg, session, record.LinkID, payload.ReplyText)
 			if err != nil || len(thread) == 0 {

@@ -20,7 +20,7 @@ var lastSendReqTime time.Time
 func minSendReqInterval() time.Duration {
 	interval := config.ConfigStruct.Xhh.MinRequestInterval
 	if interval <= 0 {
-		return 2 * time.Second
+		return 500 * time.Millisecond
 	}
 	return time.Duration(interval) * time.Second
 }
