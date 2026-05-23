@@ -288,7 +288,16 @@ func SyncNotifications() {
 	time.Sleep(messageStreamTrackStartupDelay)
 	for {
 		syncNotificationsOnce()
+		cleanupOldCommentCache()
 		time.Sleep(60 * time.Second)
+	}
+}
+
+func cleanupOldCommentCache() {
+	const maxAge = int64(7 * 24 * 60 * 60) // 7 天
+	deleted := db.CleanupCommentCache(maxAge)
+	if deleted > 0 {
+		loger.Loger.Info("[缓存清理]已清理旧评论缓存", zap.Int64("deleted", deleted))
 	}
 }
 

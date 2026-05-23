@@ -254,6 +254,32 @@ func CachedSubCommentItems(rootCommentID int) []CommentCacheItem {
 	return nil
 }
 
+func CleanupCommentCache(maxAgeSeconds int64) int64 {
+	if !commentCacheDatabaseReady() || maxAgeSeconds <= 0 {
+		return 0
+	}
+	cutoff := time.Now().Unix() - maxAgeSeconds
+	ctx := context.Background()
+	if cfg.Type == "pg" {
+		tag, err := pg.Conn.Exec(ctx, `DELETE FROM xhh_comment_cache WHERE updated_at > 0 AND updated_at < $1`, cutoff)
+		if err != nil {
+			loger.Loger.Warn("[DB]无法清理评论缓存", zap.Error(err))
+			return 0
+		}
+		return tag.RowsAffected()
+	}
+	if cfg.Type == "sqlite" {
+		res, err := sqlite.Db.Exec(`DELETE FROM xhh_comment_cache WHERE updated_at > 0 AND updated_at < ?`, cutoff)
+		if err != nil {
+			loger.Loger.Warn("[DB]无法清理评论缓存", zap.Error(err))
+			return 0
+		}
+		n, _ := res.RowsAffected()
+		return n
+	}
+	return 0
+}
+
 func commentCacheDatabaseReady() bool {
 	if cfg.Type == "pg" {
 		return pg.Conn != nil
