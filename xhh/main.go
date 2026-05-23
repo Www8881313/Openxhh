@@ -285,10 +285,13 @@ func CheckAt() {
 }
 
 func SyncNotifications() {
-	time.Sleep(messageStreamTrackStartupDelay)
+	time.Sleep(90 * time.Second)
 	for {
 		syncNotificationsOnce()
-		cleanupOldCommentCache()
+		if time.Now().Hour() == 3 {
+			cleanupOldCommentCache()
+			time.Sleep(time.Hour) // 避免同小时内重复清理
+		}
 		time.Sleep(60 * time.Second)
 	}
 }
