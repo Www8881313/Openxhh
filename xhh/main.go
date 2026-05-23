@@ -596,10 +596,21 @@ func replyWithAiComment(v db.CommStruct, mentionControl MentionControl) bool {
 	if explicitMention == "" {
 		explicitMention = GetExplicitMentionFromPost(v.LinkID, mentionControl.CleanedText, v.Uid)
 	}
-	if explicitMention != "" {
+	if mentionTarget && isPronounTarget(mentionControl.TargetText) {
+		ReplyText = mention + " " + ReplyText
+	} else if explicitMention != "" {
 		ReplyText = explicitMention + " " + ReplyText
 	} else if mentionTarget {
 		ReplyText = mention + " " + ReplyText
 	}
 	return Reply(ReplyText, strconv.Itoa(v.LinkID), strconv.Itoa(v.CommentID), strconv.Itoa(v.RootID), "")
+}
+
+func isPronounTarget(target string) bool {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "她", "他", "ta", "楼上":
+		return true
+	default:
+		return false
+	}
 }
