@@ -268,6 +268,7 @@ func CheckAt() {
 			}
 
 			for _, v := range data.Result.Messages {
+				saveInboundMessageFromApp(v)
 				if shouldQueueMessage(v) {
 					db.InsertWithUserName(v.MsgID, v.CommentID, v.RootCommentID, v.LinkID, v.UserID, v.UserName, v.CommentText, DontReply)
 				}
