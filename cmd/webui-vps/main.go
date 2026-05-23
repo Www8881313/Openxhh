@@ -1083,39 +1083,35 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 	}
 
 	mode := "thread"
-	source := "cache"
+	source := "xhh"
 	postTitle := strings.TrimSpace(payload.Title)
 	session := s.loadXHHSession()
 	var thread []commentThreadItem
 	if record.CommentID > 0 || record.RootCommentID > 0 {
-		cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
-		if ok && len(cachedThread) > 0 {
-			thread = cachedThread
-			postTitle = firstNonEmpty(postTitle, cachedTitle)
-			go s.refreshCommentThreadCache(cfg, session, record, payload.ReplyText)
-		} else {
-			thread, err = fetchXHHCommentThread(r.Context(), cfg, session, record)
-			if err != nil || len(thread) == 0 {
+		thread, err = fetchXHHCommentThread(r.Context(), cfg, session, record)
+		if err != nil || len(thread) == 0 {
+			cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+			if ok && len(cachedThread) > 0 {
+				thread = cachedThread
+				postTitle = firstNonEmpty(postTitle, cachedTitle)
+				source = "cache"
+			} else {
 				thread = fallbackCommentThread(record)
 				source = "local"
-			} else {
-				source = "xhh"
 			}
 		}
 	} else {
 		mode = "post"
-		cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
-		if ok && len(cachedThread) > 0 {
-			thread = cachedThread
-			postTitle = firstNonEmpty(postTitle, cachedTitle)
-			go s.refreshCommentThreadCache(cfg, session, record, payload.ReplyText)
-		} else {
-			thread, postTitle, err = fetchXHHPostComments(r.Context(), cfg, session, record.LinkID, payload.ReplyText)
-			if err != nil || len(thread) == 0 {
+		thread, postTitle, err = fetchXHHPostComments(r.Context(), cfg, session, record.LinkID, payload.ReplyText)
+		if err != nil || len(thread) == 0 {
+			cachedThread, cachedTitle, _, ok := s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+			if ok && len(cachedThread) > 0 {
+				thread = cachedThread
+				postTitle = firstNonEmpty(postTitle, cachedTitle)
+				source = "cache"
+			} else {
 				thread = []commentThreadItem{}
 				source = "post_empty"
-			} else {
-				source = "xhh"
 			}
 		}
 	}
