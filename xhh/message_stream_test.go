@@ -118,7 +118,7 @@ func TestShouldSaveTrackedInboundForReplyToBot(t *testing.T) {
 	}
 }
 
-func TestTrackedInboundCommentIDsIncludesNestedRepliesToBotThread(t *testing.T) {
+func TestTrackedInboundCommentIDsOnlyDirectRepliesToBot(t *testing.T) {
 	oldHeyBoxID := Info.HeyBoxId
 	Info.HeyBoxId = "42"
 	t.Cleanup(func() { Info.HeyBoxId = oldHeyBoxID })
@@ -126,22 +126,22 @@ func TestTrackedInboundCommentIDsIncludesNestedRepliesToBotThread(t *testing.T) 
 	comments := []CommentInfo{
 		{CommentID: 60, UserID: 42, ReplyID: 10, Text: "机器人回复"},
 		{CommentID: 61, UserID: 7, ReplyID: 60, Text: "直接回复机器人"},
-		{CommentID: 62, UserID: 8, ReplyID: 61, Text: "楼中楼里继续评论"},
+		{CommentID: 62, UserID: 8, ReplyID: 61, Text: "楼中楼回复其他人"},
 		{CommentID: 63, UserID: 9, ReplyID: 10, Text: "同层楼但不是这条对话链"},
 	}
 	tracked := trackedInboundCommentIDs(comments, 10, 60, db.OutboundMessage{Text: "机器人回复"})
 
-	if !tracked[61] || !tracked[62] {
-		t.Fatalf("tracked = %#v, want direct and nested replies", tracked)
+	if !tracked[61] {
+		t.Fatalf("tracked = %#v, want direct reply to bot", tracked)
+	}
+	if tracked[62] {
+		t.Fatalf("tracked = %#v, should not include reply to other user in 楼中楼", tracked)
 	}
 	if tracked[63] {
 		t.Fatalf("tracked = %#v, should not include unrelated same-floor comment", tracked)
 	}
 	if got := inboundMessageStreamSource(comments[1], 10, 60); got != "reply_to_bot" {
 		t.Fatalf("direct source = %q, want reply_to_bot", got)
-	}
-	if got := inboundMessageStreamSource(comments[2], 10, 60); got != "nested_reply_to_bot" {
-		t.Fatalf("nested source = %q, want nested_reply_to_bot", got)
 	}
 }
 

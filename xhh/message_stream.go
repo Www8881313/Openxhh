@@ -186,8 +186,17 @@ func trackBotPostReplies(outbound db.OutboundMessage) (messageStreamTrackResult,
 			if rootID <= 0 {
 				continue
 			}
+			botCommentIDs := map[int]bool{}
+			for _, comment := range comments {
+				if comment.UserID == botID {
+					botCommentIDs[comment.CommentID] = true
+				}
+			}
 			for _, comment := range comments {
 				if !isTrackableInboundComment(comment, 0, outbound) {
+					continue
+				}
+				if comment.ReplyID != 0 && !botCommentIDs[comment.ReplyID] {
 					continue
 				}
 				if db.SaveInboundMessage(db.InboundMessage{
@@ -346,19 +355,12 @@ func trackedInboundCommentIDs(comments []CommentInfo, rootID int, botCommentID i
 		}
 		return tracked
 	}
-	related := map[int]bool{botCommentID: true}
-	for changed := true; changed; {
-		changed = false
-		for _, comment := range comments {
-			if tracked[comment.CommentID] || !isTrackableInboundComment(comment, botCommentID, outbound) {
-				continue
-			}
-			if !related[comment.ReplyID] {
-				continue
-			}
+	for _, comment := range comments {
+		if !isTrackableInboundComment(comment, botCommentID, outbound) {
+			continue
+		}
+		if comment.ReplyID == botCommentID {
 			tracked[comment.CommentID] = true
-			related[comment.CommentID] = true
-			changed = true
 		}
 	}
 	return tracked
