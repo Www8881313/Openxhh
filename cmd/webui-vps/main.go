@@ -1049,7 +1049,7 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 		var cachedTitle string
 		var cachedOK bool
 		if !payload.Force {
-			cachedThread, cachedTitle, cachedOK = s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+			cachedThread, cachedTitle, _, cachedOK = s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
 		}
 		if cachedOK && len(cachedThread) > 0 {
 			thread = cachedThread
@@ -1069,7 +1069,7 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 		var cachedTitle string
 		var cachedOK bool
 		if !payload.Force {
-			cachedThread, cachedTitle, cachedOK = s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
+			cachedThread, cachedTitle, _, cachedOK = s.lookupSQLiteCommentThreadCache(cfg, record, payload.ReplyText)
 		}
 		if cachedOK && len(cachedThread) > 0 {
 			thread = cachedThread
@@ -1161,16 +1161,16 @@ func scanSQLiteCommentThreadRecord(database *sql.DB, where string, args ...any) 
 	return record, err == nil, err
 }
 
-func (s *serverState) lookupSQLiteCommentThreadCache(cfg appConfig, record commentThreadRecord, targetText string) ([]commentThreadItem, string, bool) {
+func (s *serverState) lookupSQLiteCommentThreadCache(cfg appConfig, record commentThreadRecord, targetText string) ([]commentThreadItem, string, int64, bool) {
 	if strings.ToLower(strings.TrimSpace(cfg.DataBase.Type)) != "" && strings.ToLower(strings.TrimSpace(cfg.DataBase.Type)) != "sqlite" {
-		return nil, "", false
+		return nil, "", 9999, false
 	}
 	if _, err := os.Stat(filepath.Join(s.rootDir, "sql.db")); err != nil {
-		return nil, "", false
+		return nil, "", 9999, false
 	}
 	database, err := s.openSQLiteDatabase()
 	if err != nil {
-		return nil, "", false
+		return nil, "", 9999, false
 	}
 	defer database.Close()
 	title := sqliteCachedPostTitle(database, record.LinkID)
@@ -1188,10 +1188,11 @@ func (s *serverState) lookupSQLiteCommentThreadCache(cfg appConfig, record comme
 		rootID = sqliteFirstCachedRoot(database, record.LinkID)
 	}
 	if rootID <= 0 {
-		return nil, title, false
+		return nil, title, 9999, false
 	}
+	age := sqliteCacheAgeSeconds(database, rootID)
 	items, ok := sqliteCachedCommentFloor(database, rootID, record, targetText)
-	return items, title, ok
+	return items, title, age, ok
 }
 
 func sqliteCachedPostTitle(database *sql.DB, linkID int64) string {
@@ -1249,6 +1250,18 @@ func sqliteFirstCachedRoot(database *sql.DB, linkID int64) int64 {
 		return 0
 	}
 	return rootID
+}
+
+func sqliteCacheAgeSeconds(database *sql.DB, rootID int64) int64 {
+	if rootID <= 0 {
+		return 9999
+	}
+	var updatedAt int64
+	err := database.QueryRow("SELECT COALESCE(MAX(updated_at),0) FROM xhh_comment_cache WHERE root_comment_id=?", rootID).Scan(&updatedAt)
+	if err != nil || updatedAt <= 0 {
+		return 9999
+	}
+	return time.Now().Unix() - updatedAt
 }
 
 func sqliteCachedCommentFloor(database *sql.DB, rootID int64, record commentThreadRecord, targetText string) ([]commentThreadItem, bool) {
