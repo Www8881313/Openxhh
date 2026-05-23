@@ -194,6 +194,7 @@ type Respo struct {
 		Messages []Msg `json:"messages"`
 	} `json:"result"`
 	Stat    string `json:"stat"`
+	Status  string `json:"status"`
 	Version string `json:"version"`
 }
 
@@ -315,10 +316,15 @@ func syncNotificationsOnce() {
 		if err := json.Unmarshal(data, &msgResp); err != nil {
 			return
 		}
-		if msgResp.Stat != "ok" {
-			if isXHHCaptchaStatus(msgResp.Stat) {
+		stat := msgResp.Stat
+		if stat == "" {
+			stat = msgResp.Status
+		}
+		if stat != "ok" {
+			if isXHHCaptchaStatus(stat) {
 				enterXHHCaptchaCooldown("notification_sync")
 			}
+			loger.Loger.Warn("[通知同步]API 返回非 ok", zap.String("stat", stat), zap.String("body", string(data[:min(len(data), 300)])))
 			return
 		}
 		for _, v := range msgResp.Result.Messages {
