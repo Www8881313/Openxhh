@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -31,6 +32,9 @@ var MaxPendingRepliesPerUser int
 const defaultMaxReplyThreads = 3
 const defaultMaxPendingReplies = 50
 const defaultMaxPendingRepliesPerUser = 5
+const maxReplyRetries = 5
+
+var replyRetryCounts sync.Map
 const messagePageLimit = 20
 const maxMessagePages = 5
 const replySchedulerActivePoll = time.Second
@@ -487,10 +491,20 @@ func replyComment(v db.CommStruct) {
 	}
 
 	if isok {
+		replyRetryCounts.Delete(v.MsgID)
 		db.ReplyedMsg(v.MsgID)
 	} else {
+		retries, _ := replyRetryCounts.LoadOrStore(v.MsgID, 0)
+		count := retries.(int) + 1
+		replyRetryCounts.Store(v.MsgID, count)
 		IsErr()
-		loger.Loger.Error("[XHH]无法回复评论")
+		if count >= maxReplyRetries {
+			loger.Loger.Error("[XHH]无法回复评论，已达最大重试次数，放弃", zap.Int("msg_id", v.MsgID), zap.Int("retries", count))
+			replyRetryCounts.Delete(v.MsgID)
+			db.ReplyedMsg(v.MsgID)
+		} else {
+			loger.Loger.Error("[XHH]无法回复评论，将重试", zap.Int("msg_id", v.MsgID), zap.Int("retries", count), zap.Int("max_retries", maxReplyRetries))
+		}
 	}
 }
 
