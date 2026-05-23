@@ -118,6 +118,7 @@ func (m *Msg) UnmarshalJSON(data []byte) error {
 		CreatedAt     json.RawMessage `json:"created_at"`
 		CreateAt      json.RawMessage `json:"create_at"`
 		Time          json.RawMessage `json:"time"`
+		Timestamp     json.RawMessage `json:"timestamp"`
 		Dateline      json.RawMessage `json:"dateline"`
 		MessageTime   json.RawMessage `json:"message_time"`
 		User          struct {
@@ -144,7 +145,7 @@ func (m *Msg) UnmarshalJSON(data []byte) error {
 	}
 	m.MessageType = aux.MessageType
 	m.UserName = aux.User.UserName
-	m.CreatedAt = firstJSONInt64(aux.CreatedAt, aux.CreateAt, aux.Time, aux.Dateline, aux.MessageTime)
+	m.CreatedAt = firstJSONInt64(aux.CreatedAt, aux.CreateAt, aux.Time, aux.Timestamp, aux.Dateline, aux.MessageTime)
 	m.IsPost = aux.MessageType == messageTypeAtPost
 	if m.IsPost {
 		m.CommentID = -1
