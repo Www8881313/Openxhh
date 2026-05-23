@@ -90,6 +90,12 @@ type TextDetail struct {
 	Url  string `json:"url"`
 }
 
+func cleanImageURL(u string) string {
+	u = strings.TrimRight(u, ">")
+	u = strings.TrimSuffix(u, "%3E")
+	return strings.TrimSpace(u)
+}
+
 const (
 	explicitMentionTargetPattern     = `@?([^\s，,。.!！?？:：、@]{1,24})`
 	explicitMentionTargetPatternLazy = `@?([^\s，,。.!！?？:：、@]{1,24}?)`
@@ -265,7 +271,7 @@ func GetLinkInfo(LinkID int, RootCommentID int, CommentID int, CurrentUserID int
 				continue
 			}
 			content.Type = "image_url"
-			content.ImgUrl.Url = v.Url
+			content.ImgUrl.Url = cleanImageURL(v.Url)
 			Contents = append(Contents, content)
 			continue
 		}
@@ -1114,7 +1120,7 @@ func appendCommentContext(Contents *[]ai.Content, comments []CommentInfo) {
 
 			var Img ai.Content
 			Img.Type = "image_url"
-			Img.ImgUrl.Url = img.Url
+			Img.ImgUrl.Url = cleanImageURL(img.Url)
 			commentImages = append(commentImages, Img)
 
 			commentImageCount++
