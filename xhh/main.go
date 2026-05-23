@@ -498,12 +498,17 @@ func replyComment(v db.CommStruct) {
 		count := retries.(int) + 1
 		replyRetryCounts.Store(v.MsgID, count)
 		IsErr()
+		question := mentionQuestionText(mentionControl)
+		if question == "" {
+			question = v.Text
+		}
+		failFields := []zap.Field{zap.Int("msg_id", v.MsgID), zap.Int("link_id", v.LinkID), zap.Int("comment_id", v.CommentID), zap.String("user_name", v.UserName), zap.String("text", question), zap.Int("retries", count)}
 		if count >= maxReplyRetries {
-			loger.Loger.Error("[XHH]无法回复评论，已达最大重试次数，放弃", zap.Int("msg_id", v.MsgID), zap.Int("retries", count))
+			loger.Loger.Error("[XHH]无法回复评论，已达最大重试次数，放弃", failFields...)
 			replyRetryCounts.Delete(v.MsgID)
 			db.ReplyedMsg(v.MsgID)
 		} else {
-			loger.Loger.Error("[XHH]无法回复评论，将重试", zap.Int("msg_id", v.MsgID), zap.Int("retries", count), zap.Int("max_retries", maxReplyRetries))
+			loger.Loger.Error("[XHH]无法回复评论，将重试", append(failFields, zap.Int("max_retries", maxReplyRetries))...)
 		}
 	}
 }
