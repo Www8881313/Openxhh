@@ -117,6 +117,7 @@ func SendReq(Model string, Msg []any) (Jresp respStruct) {
 		loger.Loger.Error("[AI]无法序列化JSON", zap.Error(err))
 		return
 	}
+	stripped := false
 	for i, payload := range payloads {
 		req, err := http.NewRequest("POST", cfg.BaseUrl, bytes.NewReader(payload.Body))
 		if err != nil {
@@ -139,11 +140,22 @@ func SendReq(Model string, Msg []any) (Jresp respStruct) {
 			return
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			bodyStr := string(Dresp)
+			if resp.StatusCode == http.StatusBadRequest && strings.Contains(bodyStr, "failed to download url") && !stripped {
+				loger.Loger.Warn("[Ai]图片下载失败，去掉图片重试", zap.String("variant", payload.Name))
+				newPayloads, bErr := rebuildWithoutImages(Model, Msg)
+				if bErr == nil && len(newPayloads) > 0 {
+					payloads = newPayloads
+					stripped = true
+					i = -1
+					continue
+				}
+			}
 			if i < len(payloads)-1 && shouldTryNextResponsesPayload(resp.StatusCode) {
-				loger.Loger.Warn("[Ai]Responses请求失败，尝试兼容格式", zap.String("variant", payload.Name), zap.Int("status", resp.StatusCode), zap.String("body", limitRefineString(string(Dresp), 500)))
+				loger.Loger.Warn("[Ai]Responses请求失败，尝试兼容格式", zap.String("variant", payload.Name), zap.Int("status", resp.StatusCode), zap.String("body", limitRefineString(bodyStr, 500)))
 				continue
 			}
-			loger.Loger.Error("[Ai]Ai返回HTTP错误", zap.String("variant", payload.Name), zap.Int("status", resp.StatusCode), zap.String("body", limitRefineString(string(Dresp), 500)))
+			loger.Loger.Error("[Ai]Ai返回HTTP错误", zap.String("variant", payload.Name), zap.Int("status", resp.StatusCode), zap.String("body", limitRefineString(bodyStr, 500)))
 			return
 		}
 		if useResponsesAPI(cfg.BaseUrl) {
@@ -427,4 +439,79 @@ func parseResponsesResp(data []byte) (respStruct, error) {
 	resp.Choices[0].Msg.Content = text
 	resp.Usage.TotalToken = responsesResp.Usage.TotalToken
 	return resp, nil
+}
+
+func rebuildWithoutImages(Model string, Msg []any) ([]aiRequestPayload, error) {
+	stripped := stripImagesFromMessages(Msg)
+	cfg := config.ConfigStruct.Ai
+	if useResponsesAPI(cfg.BaseUrl) {
+		primary, err := buildResponsesReqBody(Model, stripped, false)
+		if err != nil {
+			return nil, err
+		}
+		legacy, err := buildResponsesReqBody(Model, stripped, true)
+		if err != nil {
+			return nil, err
+		}
+		return []aiRequestPayload{{Name: "responses+noimg", Body: primary}, {Name: "responses_compat+noimg", Body: legacy}}, nil
+	}
+	body := BodyStruct{Model: Model, Msgs: stripped, Stream: false}
+	if aiWebSearchEnabled() {
+		body.WebSearchOptions = &webSearchOptions{SearchContextSize: aiSearchContextSize()}
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return []aiRequestPayload{{Name: "chat_completions+noimg", Body: data}}, nil
+}
+
+func stripImagesFromMessages(Msg []any) []any {
+	out := make([]any, 0, len(Msg))
+	for _, msg := range Msg {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			out = append(out, msg)
+			continue
+		}
+		var raw rawMsg
+		if err := json.Unmarshal(data, &raw); err != nil {
+			out = append(out, msg)
+			continue
+		}
+		if raw.Content == nil {
+			out = append(out, msg)
+			continue
+		}
+		var text string
+		if json.Unmarshal(raw.Content, &text) == nil {
+			out = append(out, msg)
+			continue
+		}
+		var contents []Content
+		if err := json.Unmarshal(raw.Content, &contents); err != nil {
+			out = append(out, msg)
+			continue
+		}
+		var stripped []Content
+		for i, c := range contents {
+			if c.Type == "image_url" {
+				if i > 0 && len(stripped) > 0 && contents[i-1].Type == "text" &&
+					stripped[len(stripped)-1].Text == contents[i-1].Text {
+					stripped = stripped[:len(stripped)-1]
+				}
+				continue
+			}
+			stripped = append(stripped, c)
+		}
+		if len(stripped) == 0 {
+			continue
+		}
+		var m map[string]json.RawMessage
+		json.Unmarshal(data, &m)
+		newContent, _ := json.Marshal(stripped)
+		m["content"] = newContent
+		out = append(out, m)
+	}
+	return out
 }
