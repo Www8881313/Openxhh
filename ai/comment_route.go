@@ -44,7 +44,7 @@ type CommentRouteResult struct {
 }
 
 func RouteCommentIntent(ctx context.Context, req CommentRouteRequest) (CommentRouteResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 
 	model := config.ConfigStruct.Ai.Model

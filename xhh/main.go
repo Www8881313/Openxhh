@@ -601,7 +601,7 @@ func replyComment(v db.CommStruct) {
 }
 
 func routeCommentIntent(v db.CommStruct, userText string, mentionControl MentionControl) (ai.CommentRouteResult, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
 	routeReq := buildCommentRouteRequest(v, userText, mentionControl)
