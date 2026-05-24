@@ -1042,6 +1042,7 @@ func saveCommentThreadToCache(linkID int64, rootCommentID int64, thread []commen
 }
 
 func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1137,6 +1138,7 @@ func (s *serverState) handleCommentThread(w http.ResponseWriter, r *http.Request
 		ImageCount:    countCommentImages(thread),
 		Thread:        thread,
 	})
+	fmt.Printf("[楼层]请求完成 link_id=%d source=%s items=%d 耗时=%v\n", record.LinkID, source, len(thread), time.Since(start))
 }
 
 func (s *serverState) loadXHHSession() xhhSession {
