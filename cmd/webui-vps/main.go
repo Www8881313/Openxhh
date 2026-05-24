@@ -1372,11 +1372,15 @@ func fetchXHHCommentThread(ctx context.Context, cfg appConfig, session xhhSessio
 	if record.RootCommentID > 0 {
 		items, err := fetchXHHBackendCommentThread(ctx, cfg, session, record)
 		if err == nil && len(items) > 0 {
-			return expandXHHCommentFloor(ctx, cfg, session, record.RootCommentID, items, record.CommentID, ""), nil
+			expanded := expandXHHCommentFloor(ctx, cfg, session, record.RootCommentID, items, record.CommentID, "")
+			fmt.Printf("[楼层]backend直接获取成功 root=%d items=%d expanded=%d\n", record.RootCommentID, len(items), len(expanded))
+			return expanded, nil
 		}
+		fmt.Printf("[楼层]backend失败 root=%d err=%v, fallback到link_tree\n", record.RootCommentID, err)
 	}
 	items, _, err := fetchXHHCommentFloor(ctx, cfg, session, record.LinkID, record.RootCommentID, record.CommentID, "")
 	if err == nil && len(items) > 0 {
+		fmt.Printf("[楼层]link_tree获取成功 items=%d\n", len(items))
 		return items, nil
 	}
 	if record.RootCommentID <= 0 {
