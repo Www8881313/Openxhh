@@ -1380,6 +1380,10 @@ func fetchXHHCommentThread(ctx context.Context, cfg appConfig, session xhhSessio
 			fmt.Printf("[楼层]backend直接获取成功 root=%d items=%d expanded=%d\n", record.RootCommentID, len(items), len(expanded))
 			return expanded, nil
 		}
+		if strings.Contains(err.Error(), "删除") || strings.Contains(err.Error(), "不可见") {
+			fmt.Printf("[楼层]评论已删除 root=%d\n", record.RootCommentID)
+			return nil, err
+		}
 		fmt.Printf("[楼层]backend失败 root=%d err=%v, fallback到link_tree\n", record.RootCommentID, err)
 	}
 	items, _, err := fetchXHHCommentFloor(ctx, cfg, session, record.LinkID, record.RootCommentID, record.CommentID, "")
