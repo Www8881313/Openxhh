@@ -893,6 +893,82 @@ sqlite3 /opt/Openxhh/sql.db "VACUUM;"
 # 0 4 * * 0 sqlite3 /opt/Openxhh/sql.db "DELETE FROM xhh_comment_cache WHERE updated_at < strftime('%s','now','-7 days');" && sqlite3 /opt/Openxhh/sql.db "DELETE FROM xhh_post_cache WHERE updated_at < strftime('%s','now','-7 days');" && sqlite3 /opt/Openxhh/sql.db "VACUUM;"
 ```
 
+<details>
+<summary>数据库查询常用命令</summary>
+
+以下命令适用于 VPS 默认 SQLite 部署，数据库路径为 `/opt/Openxhh/sql.db`。如果路径不同，请替换为实际路径。
+
+```bash
+DB=/opt/Openxhh/sql.db
+
+# ===== 回复统计 =====
+
+# 总 @ 回复数（机器人实际回复了多少条）
+sqlite3 $DB "SELECT COUNT(*) FROM at WHERE reply=true;"
+
+# 总 @ 收到数（所有被 @ 的消息，含未回复）
+sqlite3 $DB "SELECT COUNT(*) FROM at;"
+
+# 未回复数
+sqlite3 $DB "SELECT COUNT(*) FROM at WHERE reply=false;"
+
+# ===== 发出消息统计（outbound_messages）=====
+
+# 总发出数
+sqlite3 $DB "SELECT COUNT(*) FROM outbound_messages;"
+
+# 按来源分类统计（ai_reply / image_reply / feed_reply 等）
+sqlite3 $DB "SELECT source, COUNT(*) FROM outbound_messages GROUP BY source;"
+
+# 最近 24 小时发出数
+sqlite3 $DB "SELECT COUNT(*) FROM outbound_messages WHERE created_at >= strftime('%s','now','-1 day');"
+
+# 最近 10 条发出的消息
+sqlite3 $DB -header -column "SELECT source, link_id, substr(text,1,40) as text, datetime(created_at,'unixepoch','localtime') as time FROM outbound_messages ORDER BY created_at DESC LIMIT 10;"
+
+# ===== 收到消息统计（inbound_messages）=====
+
+# 总收到数
+sqlite3 $DB "SELECT COUNT(*) FROM inbound_messages;"
+
+# 按来源分类（at_comment / notification / reply_to_bot 等）
+sqlite3 $DB "SELECT source, COUNT(*) FROM inbound_messages GROUP BY source;"
+
+# 最近 24 小时收到数
+sqlite3 $DB "SELECT COUNT(*) FROM inbound_messages WHERE created_at >= strftime('%s','now','-1 day');"
+
+# 最近 10 条收到的消息
+sqlite3 $DB -header -column "SELECT source, user_name, substr(text,1,40) as text, datetime(created_at,'unixepoch','localtime') as time FROM inbound_messages ORDER BY created_at DESC LIMIT 10;"
+
+# ===== 自动刷帖统计（feed_reply_records）=====
+
+# 按状态分类（sent / dry_run / failed / skipped）
+sqlite3 $DB "SELECT status, COUNT(*) FROM feed_reply_records GROUP BY status;"
+
+# 成功发送数
+sqlite3 $DB "SELECT COUNT(*) FROM feed_reply_records WHERE status='sent';"
+
+# 失败数
+sqlite3 $DB "SELECT COUNT(*) FROM feed_reply_records WHERE status='failed';"
+
+# 最近 10 条失败详情
+sqlite3 $DB -header -column "SELECT link_id, substr(title,1,30) as title, reason, datetime(replied_at,'unixepoch','localtime') as time FROM feed_reply_records WHERE status='failed' ORDER BY replied_at DESC LIMIT 10;"
+
+# ===== 评论缓存 =====
+
+# 缓存的帖子数
+sqlite3 $DB "SELECT COUNT(*) FROM xhh_post_cache;"
+
+# 缓存的评论数
+sqlite3 $DB "SELECT COUNT(*) FROM xhh_comment_cache;"
+
+# ===== 数据库大小 =====
+
+ls -lh /opt/Openxhh/sql.db
+```
+
+</details>
+
 ## 默认配置速查
 
 这些值会在缺失或为 0 时自动补齐，或是本文推荐的恢复值。误改后可以按这里恢复。
