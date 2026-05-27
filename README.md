@@ -2,7 +2,7 @@
 
 Openxhh 是一个面向小黑盒的 AI 自动回复机器人。它不是只会看见一句 `@机器人` 的关键词脚本，而是尽量把帖子、楼层、图片、上下文和被点名的人一起读进去，再用 OpenAI 兼容接口生成更像真人接话的回复。
 
-项目地址：<https://github.com/Www8881313/Openxhh>
+项目地址：<https://github.com/xiaozou-wine/Openxhh>
 
 > 推荐部署方式：**VPS / Linux 版本**。  
 > Windows 图形化版本目前仍不完善，不建议普通用户优先安装；如果只是想长期稳定运行，请优先使用 VPS 版本。
@@ -49,7 +49,7 @@ Openxhh 的目标是让机器人更像一个真的在看帖的人：
 适合 Ubuntu / Debian VPS。一条命令完成编译、安装和创建 systemd 服务。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/setup.sh | sudo bash
 ```
 
 脚本会自动：安装构建依赖、拉取源码、编译主程序和 Web UI、生成默认配置、创建并启动 systemd 服务。
@@ -91,7 +91,7 @@ sudo systemctl start Openxhh
 如果只想更新已有安装（不重新配置），使用更新脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo bash
 ```
 
 <details>
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/upd
 ```bash
 # 1. 创建目录并编译
 sudo mkdir -p /opt/Openxhh
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo bash
 
 # 2. 生成并编辑配置
 cd /opt/Openxhh
@@ -548,7 +548,7 @@ VPS Web UI 当前重点是运维面板和记录排查。它适合用来：
 以后更新仍然只需要执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo bash
 ```
 
 默认会更新：
@@ -564,13 +564,13 @@ curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/upd
 如果你的安装目录或服务名不同，可以这样指定：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo env INSTALL_DIR=/你的安装目录 SERVICE_NAME=你的机器人服务名 WEBUI_SERVICE_NAME=你的WebUI服务名 bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo env INSTALL_DIR=/你的安装目录 SERVICE_NAME=你的机器人服务名 WEBUI_SERVICE_NAME=你的WebUI服务名 bash
 ```
 
 如果只想更新主程序，不更新 VPS Web UI：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo env INSTALL_WEBUI=0 bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo env INSTALL_WEBUI=0 bash
 ```
 
 </details>
@@ -841,7 +841,7 @@ sudo systemctl start Openxhh-webui
 
 ```bash
 # 一键安装（首次）
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/setup.sh | sudo bash
 
 # 进入运行目录
 cd /opt/Openxhh
@@ -873,7 +873,7 @@ sudo journalctl -u Openxhh-webui -f
 sudo systemctl restart Openxhh-webui
 
 # 更新到最新版本
-curl -fsSL https://raw.githubusercontent.com/Www8881313/Openxhh/main/scripts/update-installed.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xiaozou-wine/Openxhh/main/scripts/update-installed.sh | sudo bash
 
 # 重置 VPS Web UI 登录密码
 sudo systemctl stop Openxhh-webui
